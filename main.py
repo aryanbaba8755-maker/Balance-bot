@@ -24,7 +24,7 @@ app = Flask(__name__)
 # ==========================================
 @app.route('/')
 def home():
-    return "Bot is running perfectly!"
+    return "Bot is running ultra-smoothly!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -36,7 +36,7 @@ def run_flask():
 def setup_db():
     with sqlite3.connect(DB_NAME, timeout=30) as conn:
         cursor = conn.cursor()
-        cursor.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, balance REAL DEFAULT 0)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, balance REAL DEFAULT 0, user_id INTEGER DEFAULT 0)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS chat_data (chat_id INTEGER PRIMARY KEY, pinned_msg_id INTEGER)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS commissions (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,7 +59,7 @@ def parse_amount(amount_str):
     except ValueError:
         return None
 
-def update_balance(username, amount):
+def update_balance(username, amount, user_id=0):
     clean_username = username.replace('@', '').strip().lower()
     if not clean_username:
         return
@@ -68,10 +68,11 @@ def update_balance(username, amount):
         cursor.execute('SELECT balance FROM users WHERE LOWER(username) = ?', (clean_username,))
         row = cursor.fetchone()
         if row is None:
-            cursor.execute('INSERT INTO users (username, balance) VALUES (?, ?)', (clean_username, float(amount)))
+            cursor.execute('INSERT INTO users (username, balance, user_id) VALUES (?, ?, ?)', (clean_username, float(amount), user_id))
         else:
             new_bal = row[0] + float(amount)
-            cursor.execute('UPDATE users SET balance = ? WHERE LOWER(username) = ?', (new_bal, clean_username))
+            cursor.execute('UPDATE users SET balance = ?, user_id = CASE WHEN ? != 0 THEN ? ELSE user_id END WHERE LOWER(username) = ?', 
+                           (new_bal, user_id, user_id, clean_username))
         conn.commit()
 
 def get_user_balance(username):
@@ -85,7 +86,7 @@ def get_user_balance(username):
 def get_all_balances():
     with sqlite3.connect(DB_NAME, timeout=30) as conn:
         cursor = conn.cursor()
-        cursor.execute('SELECT username, balance FROM users WHERE balance != 0 ORDER BY username COLLATE NOCASE ASC')
+        cursor.execute('SELECT username, balance, user_id FROM users WHERE balance != 0 ORDER BY username COLLATE NOCASE ASC')
         return cursor.fetchall()
 
 def get_total_group_minus():
@@ -182,7 +183,7 @@ def is_chat_admin(chat_id, user_id):
         return False
 
 # ==========================================
-# 📜 ALPHABETICAL A-Z LIST GENERATOR (Custom Header)
+# 📜 ALPHABETICAL A-Z LIST GENERATOR (No Web Link Preview Box)
 # ==========================================
 def generate_live_list_text(chat_title):
     records = get_all_balances()
@@ -194,21 +195,26 @@ def generate_live_list_text(chat_title):
         text += "No records found.\n"
     else:
         alphabet_groups = {}
-        for username, balance in records:
+        for username, balance, u_id in records:
             first_char = username[0].upper() if username else '#'
             if not first_char.isalpha():
                 first_char = '#'
             if first_char not in alphabet_groups:
                 alphabet_groups[first_char] = []
-            alphabet_groups[first_char].append((username, balance))
+            alphabet_groups[first_char].append((username, balance, u_id))
             
         count = 1
         sorted_keys = sorted(alphabet_groups.keys())
         
         for key in sorted_keys:
-            for username, balance in alphabet_groups[key]:
+            for username, balance, u_id in alphabet_groups[key]:
                 disp_balance = int(balance) if balance.is_integer() else round(balance, 2)
-                user_link = f"<a href='https://t.me/{username}'>{username}</a>"
+                # Pure Text Mention (Clicking name opens profile, but NO link preview card is created)
+                if u_id and u_id != 0:
+                    user_link = f"<a href='tg://user?id={u_id}'>{username}</a>"
+                else:
+                    user_link = f"<a href='https://t.me/{username}'>{username}</a>"
+                    
                 text += f"{count}. {user_link} = {disp_balance}\n"
                 count += 1
             text += "➖➖➖➖➖➖➖➖➖➖➖➖➖\n"
@@ -226,15 +232,16 @@ def update_live_list(chat_id, chat_title):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("ℹ️ Check My Balance (/balanceinfo)", callback_data="check_my_bal"))
 
+    # disable_web_page_preview=True prevents Telegram from showing the green preview card
     if pinned_msg_id:
         try:
-            bot.edit_message_text(list_text, chat_id, pinned_msg_id, reply_markup=markup, parse_mode='HTML')
+            bot.edit_message_text(list_text, chat_id, pinned_msg_id, reply_markup=markup, parse_mode='HTML', disable_web_page_preview=True)
             return
         except Exception:
             pass
 
     try:
-        msg = bot.send_message(chat_id, list_text, reply_markup=markup, parse_mode='HTML')
+        msg = bot.send_message(chat_id, list_text, reply_markup=markup, parse_mode='HTML', disable_web_page_preview=True)
         bot.pin_chat_message(chat_id, msg.message_id)
         set_pinned_msg(chat_id, msg.message_id)
     except Exception:
@@ -252,7 +259,6 @@ def on_join(message):
                 bot.leave_chat(message.chat.id)
                 return
 
-# Persistent List: Never deletes old data, just refreshes pin/edit
 @bot.message_handler(commands=['start_list'])
 def manual_list_trigger(message):
     if not check_group_eligibility(message.chat.id) or not is_chat_admin(message.chat.id, message.from_user.id):
@@ -260,7 +266,7 @@ def manual_list_trigger(message):
     update_live_list(message.chat.id, message.chat.title)
     threading.Thread(target=auto_delete_message, args=(message.chat.id, message.message_id, 1)).start()
 
-# 💰 ADVANCED /add & /minus (Direct + Reply Support)
+# 💰 SMART /add & /minus (Handles replies to users & usernames)
 @bot.message_handler(commands=['add', 'minus'])
 def handle_add_minus(message):
     if not check_group_eligibility(message.chat.id) or not is_chat_admin(message.chat.id, message.from_user.id):
@@ -268,16 +274,26 @@ def handle_add_minus(message):
 
     parts = message.text.split()
     target_username = None
+    target_user_id = 0
     amount_str = None
 
-    # Case 1: Reply to a user's message e.g. /add 500 or /minus 1k
-    if message.reply_to_message and message.reply_to_message.from_user:
-        target_username = message.reply_to_message.from_user.username
+    # Reply Handling
+    if message.reply_to_message:
+        replied_user = message.reply_to_message.from_user
+        if replied_user and not replied_user.is_bot:
+            target_username = replied_user.username
+            target_user_id = replied_user.id
+        elif message.reply_to_message.text:
+            # Extract @username if replying to a text message mentioning a user
+            usernames_in_text = re.findall(r'@(\w+)', message.reply_to_message.text)
+            if usernames_in_text:
+                target_username = usernames_in_text[0]
+        
         if len(parts) >= 2:
             amount_str = parts[1]
 
-    # Case 2: Direct command e.g. /add 500 @username or /minus 2k @username
-    elif len(parts) >= 3:
+    # Direct Command Handling: /add 500 @username or /add 2k @username
+    if not target_username and len(parts) >= 3:
         amount_str = parts[1]
         target_username = parts[2].replace('@', '').strip()
 
@@ -287,7 +303,7 @@ def handle_add_minus(message):
             if message.text.startswith('/minus'):
                 amount = -amount
 
-            update_balance(target_username, amount)
+            update_balance(target_username, amount, target_user_id)
             action = "added" if amount > 0 else "deducted"
             reply_msg = bot.reply_to(message, f"✅ ₹{abs(amount)} {action} for @{target_username}")
             
@@ -296,21 +312,16 @@ def handle_add_minus(message):
             
             update_live_list(message.chat.id, message.chat.title)
 
-# 👤 ADVANCED /balance /balanceinfo (Direct + Reply Support)
+# 👤 SMART /balance /balanceinfo
 @bot.message_handler(commands=['balance', 'balanceinfo'])
 def handle_balance_check(message):
     target_username = None
     parts = message.text.split()
 
-    # Case 1: Reply to someone's message
-    if message.reply_to_message and message.reply_to_message.from_user:
+    if message.reply_to_message and message.reply_to_message.from_user and not message.reply_to_message.from_user.is_bot:
         target_username = message.reply_to_message.from_user.username
-
-    # Case 2: /balance @username
     elif len(parts) >= 2:
         target_username = parts[1].replace('@', '').strip()
-
-    # Case 3: Self balance check
     else:
         target_username = message.from_user.username
 
@@ -383,7 +394,7 @@ def detect_table(message):
             except ValueError:
                 pass
 
-# 🏆 Winner Click Handler (Leaves Admin Table Intact, Updates Balance & List)
+# 🏆 Winner Click Handler
 @bot.callback_query_handler(func=lambda call: call.data.startswith('w|'))
 def process_winner(call):
     bot.answer_callback_query(call.id, "Updating Result...")
@@ -416,10 +427,8 @@ def process_winner(call):
 
         result_msg_text = f"🎲 <i>Table Status</i>\n\n{p1_str}\n\n{p2_str}\n\n{last_line_text}"
         
-        # Bot sends status message (Admin table remains safe & untouched)
         bot.send_message(call.message.chat.id, result_msg_text, parse_mode='HTML')
         
-        # Delete Bot's button prompt message
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
         except Exception:
@@ -437,6 +446,5 @@ if __name__ == "__main__":
     setup_db()
     threading.Thread(target=run_flask).start()
     
-    print("Bot is fully upgraded with reply commands and persistent lists...")
+    print("Bot updated with link preview disabled and smart reply handling...")
     bot.polling(none_stop=True)
-    
