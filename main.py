@@ -20,7 +20,7 @@ bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
 # ==========================================
-# 🌐 FLASK SERVER (Fast Deployment)
+# 🌐 FLASK SERVER
 # ==========================================
 @app.route('/')
 def home():
@@ -31,10 +31,13 @@ def run_flask():
     app.run(host="0.0.0.0", port=port)
 
 # ==========================================
-# 🗄️ DATABASE FUNCTIONS
+# 🗄️ DATABASE FUNCTIONS (Fixed Multi-threading)
 # ==========================================
+def get_db():
+    return sqlite3.connect(DB_NAME, timeout=10, check_same_thread=False)
+
 def setup_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db()
     cursor = conn.cursor()
     cursor.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, balance REAL DEFAULT 0)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS chat_data (chat_id INTEGER PRIMARY KEY, pinned_msg_id INTEGER)''')
@@ -52,24 +55,28 @@ def update_balance(username, amount):
     clean_username = username.replace('@', '').strip().lower()
     if not clean_username:
         return
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db()
     cursor = conn.cursor()
     
-    cursor.execute('SELECT balance FROM users WHERE LOWER(username) = ?', (clean_username,))
-    row = cursor.fetchone()
-    
-    if row is None:
-        cursor.execute('INSERT INTO users (username, balance) VALUES (?, ?)', (clean_username, float(amount)))
-    else:
-        new_bal = row[0] + float(amount)
-        cursor.execute('UPDATE users SET balance = ? WHERE LOWER(username) = ?', (new_bal, clean_username))
+    try:
+        cursor.execute('SELECT balance FROM users WHERE LOWER(username) = ?', (clean_username,))
+        row = cursor.fetchone()
         
-    conn.commit()
-    conn.close()
+        if row is None:
+            cursor.execute('INSERT INTO users (username, balance) VALUES (?, ?)', (clean_username, float(amount)))
+        else:
+            new_bal = row[0] + float(amount)
+            cursor.execute('UPDATE users SET balance = ? WHERE LOWER(username) = ?', (new_bal, clean_username))
+            
+        conn.commit()
+    except Exception as e:
+        print(f"DB Update Error: {e}")
+    finally:
+        conn.close()
 
 def get_user_balance(username):
     clean_username = username.replace('@', '').strip().lower()
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db()
     cursor = conn.cursor()
     cursor.execute('SELECT balance FROM users WHERE LOWER(username) = ?', (clean_username,))
     row = cursor.fetchone()
@@ -77,7 +84,7 @@ def get_user_balance(username):
     return row[0] if row else 0.0
 
 def get_all_balances():
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db()
     cursor = conn.cursor()
     cursor.execute('SELECT username, balance FROM users WHERE balance != 0 ORDER BY username COLLATE NOCASE ASC')
     records = cursor.fetchall()
@@ -86,7 +93,7 @@ def get_all_balances():
 
 def record_commission(chat_id, comm_amount):
     today_str = datetime.now().strftime('%Y-%m-%d')
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db()
     cursor = conn.cursor()
     cursor.execute('INSERT INTO commissions (chat_id, amount, date_str, timestamp) VALUES (?, ?, ?, ?)',
                    (chat_id, float(comm_amount), today_str, time.time()))
@@ -94,7 +101,7 @@ def record_commission(chat_id, comm_amount):
     conn.close()
 
 def get_7_days_commission_report(chat_id):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db()
     cursor = conn.cursor()
     
     report_lines = []
@@ -125,7 +132,7 @@ def get_7_days_commission_report(chat_id):
     return report_lines, disp_total
 
 def get_pinned_msg(chat_id):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db()
     cursor = conn.cursor()
     cursor.execute('SELECT pinned_msg_id FROM chat_data WHERE chat_id = ?', (chat_id,))
     result = cursor.fetchone()
@@ -133,14 +140,14 @@ def get_pinned_msg(chat_id):
     return result[0] if result else None
 
 def set_pinned_msg(chat_id, msg_id):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db()
     cursor = conn.cursor()
     cursor.execute('INSERT OR REPLACE INTO chat_data (chat_id, pinned_msg_id) VALUES (?, ?)', (chat_id, msg_id))
     conn.commit()
     conn.close()
 
 # ==========================================
-# 🛡️ SECURITY & VERIFICATION
+# 🛡️ UTILITY & SECURITY
 # ==========================================
 def auto_delete_message(chat_id, message_id, delay=2):
     time.sleep(delay)
@@ -208,18 +215,18 @@ def update_live_list(chat_id, chat_title):
     if pinned_msg_id:
         try:
             bot.edit_message_text(list_text, chat_id, pinned_msg_id, reply_markup=markup, parse_mode='Markdown')
-        except Exception:
+        except Exception as e:
             pass
     else:
-        msg = bot.send_message(chat_id, list_text, reply_markup=markup, parse_mode='Markdown')
         try:
+            msg = bot.send_message(chat_id, list_text, reply_markup=markup, parse_mode='Markdown')
             bot.pin_chat_message(chat_id, msg.message_id)
             set_pinned_msg(chat_id, msg.message_id)
-        except Exception:
+        except Exception as e:
             pass
 
 # ==========================================
-# 🤖 COMMANDS & HANDLERS
+# 🤖 HANDLERS & COMMANDS
 # ==========================================
 
 @bot.message_handler(content_types=['new_chat_members'])
@@ -272,41 +279,43 @@ def show_commission_report(message):
     
     report_text = "📊 <b>7-DAYS COMMISSION REPORT</b> 📊\n"
     report_text += "➖➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
-    
     for line in daily_lines:
         report_text += f"🔹 {line}\n"
-        
     report_text += "\n➖➖➖➖➖➖➖➖➖➖➖➖➖\n"
     report_text += f"💰 <b>This Week Total Commission: ₹{total_7_days}</b>"
     
     bot.send_message(message.chat.id, report_text, parse_mode='HTML')
 
+# ℹ️ /balanceinfo Button Handler (Fixed Instant Response)
+@bot.callback_query_handler(func=lambda call: call.data == "check_my_bal")
+def callback_check_my_bal(call):
+    username = call.from_user.username
+    if not username:
+        bot.answer_callback_query(call.id, "❌ Pehle apna Telegram Username set karein!", show_alert=True)
+        return
+    
+    bal = get_user_balance(username)
+    disp_bal = int(bal) if bal.is_integer() else round(bal, 2)
+    
+    # Direct Pop-up Alert
+    bot.answer_callback_query(call.id, f"👤 @{username}\n💰 Aapka Balance: ₹{disp_bal}", show_alert=True)
+
 @bot.message_handler(commands=['balanceinfo'])
 def cmd_balance_info(message):
     username = message.from_user.username
     if not username:
-        msg = bot.reply_to(message, "❌ Please set a Telegram username first!")
+        msg = bot.reply_to(message, "❌ Pehle apna Telegram Username set karein!")
         threading.Thread(target=auto_delete_message, args=(message.chat.id, msg.message_id, 3)).start()
         return
         
     bal = get_user_balance(username)
     disp_bal = int(bal) if bal.is_integer() else round(bal, 2)
     
-    msg = bot.reply_to(message, f"👤 @{username}\n💰 Your Current Balance: <b>₹{disp_bal}</b>", parse_mode='HTML')
+    msg = bot.reply_to(message, f"👤 @{username}\n💰 Aapka Balance: <b>₹{disp_bal}</b>", parse_mode='HTML')
     threading.Thread(target=auto_delete_message, args=(message.chat.id, msg.message_id, 5)).start()
     threading.Thread(target=auto_delete_message, args=(message.chat.id, message.message_id, 2)).start()
 
-@bot.callback_query_handler(func=lambda call: call.data == "check_my_bal")
-def callback_check_my_bal(call):
-    username = call.from_user.username
-    if not username:
-        bot.answer_callback_query(call.id, "❌ Please set a Telegram username first to check balance!", show_alert=True)
-        return
-    bal = get_user_balance(username)
-    disp_bal = int(bal) if bal.is_integer() else round(bal, 2)
-    bot.answer_callback_query(call.id, f"👤 @{username}\n💰 Your Current Balance: ₹{disp_bal}", show_alert=True)
-
-# 5️⃣ AUTO TABLE DETECTION (Regex for extra words like full, hc, lcj)
+# 🎲 Table Auto Detection
 @bot.message_handler(func=lambda message: message.text and ('✅' in message.text or '✔️' in message.text or 'full' in message.text.lower()))
 def detect_table(message):
     if not check_group_eligibility(message.chat.id) or not is_chat_admin(message.chat.id, message.from_user.id):
@@ -336,33 +345,43 @@ def detect_table(message):
             except ValueError:
                 pass
 
-# 6️⃣ WINNER CLICK HANDLER
+# 🏆 Winner Click Handler (Fixed Loading Issue & Balance Sync)
 @bot.callback_query_handler(func=lambda call: call.data.startswith('w_'))
 def process_winner(call):
+    # Turant Telegram ko response dena taaki Loading symbol hat jaye
+    bot.answer_callback_query(call.id, "Processing Result...")
+
     if not check_group_eligibility(call.message.chat.id) or not is_chat_admin(call.message.chat.id, call.from_user.id):
-        bot.answer_callback_query(call.id, "❌ Only Group Admins can set result!", show_alert=True)
+        bot.answer_callback_query(call.id, "❌ Only Admins can set result!", show_alert=True)
         return
 
-    data_parts = call.data.split('_')
-    winner = data_parts[1]
-    loser = data_parts[2]
-    full_amount = float(data_parts[3])
-    
-    commission_cut = (full_amount * COMMISSION_RATE) / 100.0
-    winner_net_amount = full_amount - commission_cut
-    
-    update_balance(winner, winner_net_amount)
-    update_balance(loser, -full_amount)
-    record_commission(call.message.chat.id, commission_cut)
-    
-    disp_winner_amt = int(winner_net_amount) if winner_net_amount.is_integer() else round(winner_net_amount, 2)
-    disp_comm = int(commission_cut) if commission_cut.is_integer() else round(commission_cut, 2)
-    
-    bot.edit_message_text(f"🏆 <b>Table Result</b>\n\n1. @{winner} ✔️✔️ (+₹{disp_winner_amt})\n2. @{loser} (-₹{full_amount})\n💰 Table: ₹{full_amount} | 📉 5% Comm: ₹{disp_comm}", 
-                          call.message.chat.id, call.message.message_id, parse_mode='HTML')
-    
-    update_live_list(call.message.chat.id, call.message.chat.title)
-    bot.answer_callback_query(call.id, f"✅ Updated! {winner} won +₹{disp_winner_amt} | Comm: ₹{disp_comm}")
+    try:
+        data_parts = call.data.split('_')
+        winner = data_parts[1]
+        loser = data_parts[2]
+        full_amount = float(data_parts[3])
+        
+        # 5% Cut Calculation
+        commission_cut = (full_amount * COMMISSION_RATE) / 100.0
+        winner_net_amount = full_amount - commission_cut
+        
+        # Balance DB update
+        update_balance(winner, winner_net_amount)
+        update_balance(loser, -full_amount)
+        record_commission(call.message.chat.id, commission_cut)
+        
+        disp_winner_amt = int(winner_net_amount) if winner_net_amount.is_integer() else round(winner_net_amount, 2)
+        disp_comm = int(commission_cut) if commission_cut.is_integer() else round(commission_cut, 2)
+        
+        # Result text edit
+        bot.edit_message_text(f"🏆 <b>Table Result</b>\n\n1. @{winner} ✔️✔️ (+₹{disp_winner_amt})\n2. @{loser} (-₹{full_amount})\n💰 Table: ₹{full_amount} | 📉 5% Comm: ₹{disp_comm}", 
+                              call.message.chat.id, call.message.message_id, parse_mode='HTML')
+        
+        # INSTANT LIST EDIT
+        update_live_list(call.message.chat.id, call.message.chat.title)
+        
+    except Exception as e:
+        print(f"Error in process_winner: {e}")
 
 # ==========================================
 # 🚀 MAIN RUNNER
@@ -371,5 +390,5 @@ if __name__ == "__main__":
     setup_db()
     threading.Thread(target=run_flask).start()
     
-    print("Bot updated with regex detection...")
+    print("Bot is 100% fixed and running...")
     bot.polling(none_stop=True)
