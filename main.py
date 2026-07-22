@@ -31,131 +31,112 @@ def run_flask():
     app.run(host="0.0.0.0", port=port)
 
 # ==========================================
-# 🗄️ DATABASE FUNCTIONS
+# 🗄️ DATABASE FUNCTIONS (Fixed Concurrency)
 # ==========================================
-def get_db():
-    return sqlite3.connect(DB_NAME, timeout=10, check_same_thread=False)
-
 def setup_db():
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, balance REAL DEFAULT 0)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS chat_data (chat_id INTEGER PRIMARY KEY, pinned_msg_id INTEGER)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS commissions (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        chat_id INTEGER,
-                        amount REAL,
-                        date_str TEXT,
-                        timestamp REAL
-                    )''')
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_NAME, timeout=30) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, balance REAL DEFAULT 0)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS chat_data (chat_id INTEGER PRIMARY KEY, pinned_msg_id INTEGER)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS commissions (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            chat_id INTEGER,
+                            amount REAL,
+                            date_str TEXT,
+                            timestamp REAL
+                        )''')
+        conn.commit()
 
 def update_balance(username, amount):
     clean_username = username.replace('@', '').strip().lower()
     if not clean_username:
         return
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
+    with sqlite3.connect(DB_NAME, timeout=30) as conn:
+        cursor = conn.cursor()
         cursor.execute('SELECT balance FROM users WHERE LOWER(username) = ?', (clean_username,))
         row = cursor.fetchone()
         if row is None:
             cursor.execute('INSERT INTO users (username, balance) VALUES (?, ?)', (clean_username, float(amount)))
         else:
-            # Current Balance + Amount (Maths Fix: 500 - 600 = -100)
             new_bal = row[0] + float(amount)
             cursor.execute('UPDATE users SET balance = ? WHERE LOWER(username) = ?', (new_bal, clean_username))
         conn.commit()
-    except Exception as e:
-        print(f"DB Error: {e}")
-    finally:
-        conn.close()
 
 def get_user_balance(username):
     clean_username = username.replace('@', '').strip().lower()
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('SELECT balance FROM users WHERE LOWER(username) = ?', (clean_username,))
-    row = cursor.fetchone()
-    conn.close()
-    return row[0] if row else 0.0
+    with sqlite3.connect(DB_NAME, timeout=30) as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT balance FROM users WHERE LOWER(username) = ?', (clean_username,))
+        row = cursor.fetchone()
+        return row[0] if row else 0.0
 
 def get_all_balances():
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('SELECT username, balance FROM users WHERE balance != 0 ORDER BY username COLLATE NOCASE ASC')
-    records = cursor.fetchall()
-    conn.close()
-    return records
+    with sqlite3.connect(DB_NAME, timeout=30) as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT username, balance FROM users WHERE balance != 0 ORDER BY username COLLATE NOCASE ASC')
+        return cursor.fetchall()
 
 def get_total_group_minus():
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('SELECT SUM(balance) FROM users WHERE balance < 0')
-    row = cursor.fetchone()
-    conn.close()
-    return abs(row[0]) if row and row[0] else 0.0
+    with sqlite3.connect(DB_NAME, timeout=30) as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT SUM(balance) FROM users WHERE balance < 0')
+        row = cursor.fetchone()
+        return abs(row[0]) if row and row[0] else 0.0
 
 def record_commission(chat_id, comm_amount):
     today_str = datetime.now().strftime('%Y-%m-%d')
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('INSERT INTO commissions (chat_id, amount, date_str, timestamp) VALUES (?, ?, ?, ?)',
-                   (chat_id, float(comm_amount), today_str, time.time()))
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_NAME, timeout=30) as conn:
+        cursor = conn.cursor()
+        cursor.execute('INSERT INTO commissions (chat_id, amount, date_str, timestamp) VALUES (?, ?, ?, ?)',
+                       (chat_id, float(comm_amount), today_str, time.time()))
+        conn.commit()
 
 def get_7_days_commission_report(chat_id):
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    report_lines = []
-    total_7_days_comm = 0.0
-    today = datetime.now()
-    group_minus = get_total_group_minus()
-    
-    for i in range(7):
-        date_obj = today - timedelta(days=i)
-        date_str = date_obj.strftime('%Y-%m-%d')
+    with sqlite3.connect(DB_NAME, timeout=30) as conn:
+        cursor = conn.cursor()
+        report_lines = []
+        total_7_days_comm = 0.0
+        today = datetime.now()
+        group_minus = get_total_group_minus()
         
-        cursor.execute('SELECT SUM(amount), COUNT(id) FROM commissions WHERE chat_id = ? AND date_str = ?', (chat_id, date_str))
-        row = cursor.fetchone()
-        
-        comm_sum = row[0] if row and row[0] else 0.0
-        table_count = row[1] if row and row[1] else 0
-        total_7_days_comm += comm_sum
-        
-        disp_comm = int(comm_sum) if comm_sum.is_integer() else round(comm_sum, 2)
-        daily_minus = group_minus if i == 0 else 0.0
-        net_profit = comm_sum - daily_minus
-        disp_net = int(net_profit) if net_profit.is_integer() else round(net_profit, 2)
-        disp_minus = int(daily_minus) if daily_minus.is_integer() else round(daily_minus, 2)
-        
-        if i == 0:
-            report_lines.append(f"<b>Today ({date_str})</b>: Comm: ₹{disp_comm} | Minus: ₹{disp_minus} | <b>Net: ₹{disp_net}</b> ({table_count} Tables)")
-        else:
-            date_fmt = date_obj.strftime('%d %b')
-            report_lines.append(f"<b>{date_fmt}</b>: Comm: ₹{disp_comm}")
+        for i in range(7):
+            date_obj = today - timedelta(days=i)
+            date_str = date_obj.strftime('%Y-%m-%d')
             
-    conn.close()
-    disp_total = int(total_7_days_comm) if total_7_days_comm.is_integer() else round(total_7_days_comm, 2)
-    return report_lines, disp_total
+            cursor.execute('SELECT SUM(amount), COUNT(id) FROM commissions WHERE chat_id = ? AND date_str = ?', (chat_id, date_str))
+            row = cursor.fetchone()
+            
+            comm_sum = row[0] if row and row[0] else 0.0
+            table_count = row[1] if row and row[1] else 0
+            total_7_days_comm += comm_sum
+            
+            disp_comm = int(comm_sum) if comm_sum.is_integer() else round(comm_sum, 2)
+            daily_minus = group_minus if i == 0 else 0.0
+            net_profit = comm_sum - daily_minus
+            disp_net = int(net_profit) if net_profit.is_integer() else round(net_profit, 2)
+            disp_minus = int(daily_minus) if daily_minus.is_integer() else round(daily_minus, 2)
+            
+            if i == 0:
+                report_lines.append(f"<b>Today ({date_str})</b>: Comm: ₹{disp_comm} | Minus: ₹{disp_minus} | <b>Net: ₹{disp_net}</b> ({table_count} Tables)")
+            else:
+                date_fmt = date_obj.strftime('%d %b')
+                report_lines.append(f"<b>{date_fmt}</b>: Comm: ₹{disp_comm}")
+                
+        disp_total = int(total_7_days_comm) if total_7_days_comm.is_integer() else round(total_7_days_comm, 2)
+        return report_lines, disp_total
 
 def get_pinned_msg(chat_id):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('SELECT pinned_msg_id FROM chat_data WHERE chat_id = ?', (chat_id,))
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result else None
+    with sqlite3.connect(DB_NAME, timeout=30) as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT pinned_msg_id FROM chat_data WHERE chat_id = ?', (chat_id,))
+        result = cursor.fetchone()
+        return result[0] if result else None
 
 def set_pinned_msg(chat_id, msg_id):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('INSERT OR REPLACE INTO chat_data (chat_id, pinned_msg_id) VALUES (?, ?)', (chat_id, msg_id))
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_NAME, timeout=30) as conn:
+        cursor = conn.cursor()
+        cursor.execute('INSERT OR REPLACE INTO chat_data (chat_id, pinned_msg_id) VALUES (?, ?)', (chat_id, msg_id))
+        conn.commit()
 
 # ==========================================
 # 🛡️ SECURITY & UTILITIES
@@ -224,7 +205,6 @@ def generate_live_list_text(chat_title):
     text += "\n⏺️ Check Full Records..."
     return text
 
-# 🛑 STRICT SINGLE PINNED LIST EDIT LOGIC
 def update_live_list(chat_id, chat_title):
     if not check_group_eligibility(chat_id):
         return
@@ -235,21 +215,18 @@ def update_live_list(chat_id, chat_title):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("ℹ️ Check My Balance (/balanceinfo)", callback_data="check_my_bal"))
 
-    # Case 1: Pinned Msg PEHLE SE HAI -> ONLY EDIT (NO NEW MESSAGE)
     if pinned_msg_id:
         try:
             bot.edit_message_text(list_text, chat_id, pinned_msg_id, reply_markup=markup, parse_mode='HTML')
-            return # Simply edit & return! Never send new message
-        except Exception as e:
-            # Agar edit fail ho jaye (e.g. kisi ne msg delete kar diya), tabhi neeche Naya banaega
+            return
+        except Exception:
             pass
 
-    # Case 2: Pinned Msg NAHI HAI -> Pehli baar banao aur PIN karo
     try:
         msg = bot.send_message(chat_id, list_text, reply_markup=markup, parse_mode='HTML')
         bot.pin_chat_message(chat_id, msg.message_id)
         set_pinned_msg(chat_id, msg.message_id)
-    except Exception as e:
+    except Exception:
         pass
 
 # ==========================================
@@ -264,13 +241,10 @@ def on_join(message):
                 bot.leave_chat(message.chat.id)
                 return
 
-# Force Fresh List (Sirf tabhi naya message bheje aur pin kare jab Admin yeh command de)
 @bot.message_handler(commands=['start_list'])
 def manual_list_trigger(message):
     if not check_group_eligibility(message.chat.id) or not is_chat_admin(message.chat.id, message.from_user.id):
         return
-    
-    # Old pinned DB clear karke bilkul nayi list shuru karna
     set_pinned_msg(message.chat.id, None)
     update_live_list(message.chat.id, message.chat.title)
     threading.Thread(target=auto_delete_message, args=(message.chat.id, message.message_id, 1)).start()
@@ -296,7 +270,6 @@ def handle_add_minus(message):
             threading.Thread(target=auto_delete_message, args=(message.chat.id, reply_msg.message_id, 2)).start()
             threading.Thread(target=auto_delete_message, args=(message.chat.id, message.message_id, 2)).start()
             
-            # Live Edit Existing Pinned List
             update_live_list(message.chat.id, message.chat.title)
             
         except ValueError:
@@ -374,7 +347,7 @@ def detect_table(message):
             except ValueError:
                 pass
 
-# 🏆 Winner Click Handler (Net Calculation + Single Pinned Edit)
+# 🏆 Winner Click Handler
 @bot.callback_query_handler(func=lambda call: call.data.startswith('w|'))
 def process_winner(call):
     bot.answer_callback_query(call.id, "Updating Result...")
@@ -392,16 +365,13 @@ def process_winner(call):
         orig_admin_msg_id = int(data_parts[5])
         last_line_text = data_parts[6]
         
-        # 5% Cut Math
         commission_cut = (full_amount * COMMISSION_RATE) / 100.0
         winner_net_amount = full_amount - commission_cut
         
-        # ACCURATE NET BALANCE UPDATE (Prev Balance + Net Won / Minus Loss)
         update_balance(winner, winner_net_amount)
         update_balance(loser, -full_amount)
         record_commission(call.message.chat.id, commission_cut)
         
-        # Format text like screenshot
         if won_choice == '1':
             p1_str = f"(1). {winner} ✔️✔️"
             p2_str = f"(2). {loser}"
@@ -411,22 +381,18 @@ def process_winner(call):
 
         result_msg_text = f"🎲 <i>Table Status</i>\n\n{p1_str}\n\n{p2_str}\n\n{last_line_text}"
         
-        # Delete Admin's original table
         try:
             bot.delete_message(call.message.chat.id, orig_admin_msg_id)
         except Exception:
             pass
 
-        # Send status
         bot.send_message(call.message.chat.id, result_msg_text, parse_mode='HTML')
         
-        # Delete Bot prompt
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
         except Exception:
             pass
 
-        # EDIT SAME PINNED LIST (NO NEW PIN!)
         update_live_list(call.message.chat.id, call.message.chat.title)
         
     except Exception as e:
@@ -439,6 +405,6 @@ if __name__ == "__main__":
     setup_db()
     threading.Thread(target=run_flask).start()
     
-    print("Bot fixed: Single permanent pinned edit & exact net balance math active!")
+    print("Bot fixed!")
     bot.polling(none_stop=True)
-        
+    
