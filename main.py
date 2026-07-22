@@ -24,7 +24,7 @@ app = Flask(__name__)
 # ==========================================
 @app.route('/')
 def home():
-    return "Bot is active and running!"
+    return "Bot is running ultra-smoothly!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -57,20 +57,17 @@ def update_balance(username, amount):
         return
     conn = get_db()
     cursor = conn.cursor()
-    
     try:
         cursor.execute('SELECT balance FROM users WHERE LOWER(username) = ?', (clean_username,))
         row = cursor.fetchone()
-        
         if row is None:
             cursor.execute('INSERT INTO users (username, balance) VALUES (?, ?)', (clean_username, float(amount)))
         else:
             new_bal = row[0] + float(amount)
             cursor.execute('UPDATE users SET balance = ? WHERE LOWER(username) = ?', (new_bal, clean_username))
-            
         conn.commit()
     except Exception as e:
-        print(f"DB Update Error: {e}")
+        print(f"DB Error: {e}")
     finally:
         conn.close()
 
@@ -91,6 +88,15 @@ def get_all_balances():
     conn.close()
     return records
 
+def get_total_group_minus():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT SUM(balance) FROM users WHERE balance < 0')
+    row = cursor.fetchone()
+    conn.close()
+    # Negative balance values sum -> return positive number representing total minus
+    return abs(row[0]) if row and row[0] else 0.0
+
 def record_commission(chat_id, comm_amount):
     today_str = datetime.now().strftime('%Y-%m-%d')
     conn = get_db()
@@ -105,8 +111,9 @@ def get_7_days_commission_report(chat_id):
     cursor = conn.cursor()
     
     report_lines = []
-    total_7_days = 0.0
+    total_7_days_comm = 0.0
     today = datetime.now()
+    group_minus = get_total_group_minus()
     
     for i in range(7):
         date_obj = today - timedelta(days=i)
@@ -117,18 +124,24 @@ def get_7_days_commission_report(chat_id):
         
         comm_sum = row[0] if row and row[0] else 0.0
         table_count = row[1] if row and row[1] else 0
-        total_7_days += comm_sum
+        total_7_days_comm += comm_sum
         
         disp_comm = int(comm_sum) if comm_sum.is_integer() else round(comm_sum, 2)
         
+        # Calculate daily net (Commission - Minus)
+        daily_minus = group_minus if i == 0 else 0.0  # Current live minus for today
+        net_profit = comm_sum - daily_minus
+        disp_net = int(net_profit) if net_profit.is_integer() else round(net_profit, 2)
+        disp_minus = int(daily_minus) if daily_minus.is_integer() else round(daily_minus, 2)
+        
         if i == 0:
-            report_lines.append(f"Today ({date_str}): ₹{disp_comm} ({table_count} Tables)")
+            report_lines.append(f"<b>Today ({date_str})</b>: Comm: ₹{disp_comm} | Minus: ₹{disp_minus} | <b>Net: ₹{disp_net}</b> ({table_count} Tables)")
         else:
             date_fmt = date_obj.strftime('%d %b')
-            report_lines.append(f"{date_fmt}: ₹{disp_comm} ({table_count} Tables)")
+            report_lines.append(f"<b>{date_fmt}</b>: Comm: ₹{disp_comm}")
             
     conn.close()
-    disp_total = int(total_7_days) if total_7_days.is_integer() else round(total_7_days, 2)
+    disp_total = int(total_7_days_comm) if total_7_days_comm.is_integer() else round(total_7_days_comm, 2)
     return report_lines, disp_total
 
 def get_pinned_msg(chat_id):
@@ -147,9 +160,9 @@ def set_pinned_msg(chat_id, msg_id):
     conn.close()
 
 # ==========================================
-# 🛡️ SECURITY & UTILITY
+# 🛡️ SECURITY & UTILITIES
 # ==========================================
-def auto_delete_message(chat_id, message_id, delay=2):
+def auto_delete_message(chat_id, message_id, delay=1):
     time.sleep(delay)
     try:
         bot.delete_message(chat_id, message_id)
@@ -178,7 +191,7 @@ def is_chat_admin(chat_id, user_id):
         return False
 
 # ==========================================
-# 📜 LIST GENERATOR (Profile Clickable Links Format)
+# 📜 ALPHABETICAL A-Z LIST GENERATOR
 # ==========================================
 def generate_live_list_text(chat_title):
     records = get_all_balances()
@@ -190,20 +203,28 @@ def generate_live_list_text(chat_title):
     if not records:
         text += "No records found.\n"
     else:
+        # Grouping alphabetically
+        alphabet_groups = {}
+        for username, balance in records:
+            first_char = username[0].upper() if username else '#'
+            if not first_char.isalpha():
+                first_char = '#'
+            if first_char not in alphabet_groups:
+                alphabet_groups[first_char] = []
+            alphabet_groups[first_char].append((username, balance))
+            
         count = 1
-        for i, (username, balance) in enumerate(records):
-            disp_balance = int(balance) if balance.is_integer() else round(balance, 2)
-            # Profile link syntax (Clicking name opens user's Telegram profile)
-            user_link = f"<a href='https://t.me/{username}'>{username}</a>"
-            text += f"{count}. {user_link} = {disp_balance}\n"
+        sorted_keys = sorted(alphabet_groups.keys())
+        
+        for key in sorted_keys:
+            for username, balance in alphabet_groups[key]:
+                disp_balance = int(balance) if balance.is_integer() else round(balance, 2)
+                user_link = f"<a href='https://t.me/{username}'>{username}</a>"
+                text += f"{count}. {user_link} = {disp_balance}\n"
+                count += 1
+            text += "➖➖➖➖➖➖➖➖➖➖➖➖➖\n"
             
-            # Separator line every 3 records
-            if count % 3 == 0 and i != len(records) - 1:
-                text += "======================\n"
-            count += 1
-            
-    text += "\n➖➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
-    text += "⏺️ Check Full Records..."
+    text += "\n⏺️ Check Full Records..."
     return text
 
 def update_live_list(chat_id, chat_title):
@@ -230,7 +251,7 @@ def update_live_list(chat_id, chat_title):
             pass
 
 # ==========================================
-# 🤖 HANDLERS & COMMANDS
+# 🤖 COMMANDS & HANDLERS
 # ==========================================
 
 @bot.message_handler(content_types=['new_chat_members'])
@@ -281,14 +302,14 @@ def show_commission_report(message):
 
     daily_lines, total_7_days = get_7_days_commission_report(message.chat.id)
     
-    report_text = "📊 7-DAYS COMMISSION REPORT 📊\n"
+    report_text = "📊 <b>7-DAYS COMMISSION & LEDGER REPORT</b>\n"
     report_text += "➖➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
     for line in daily_lines:
-        report_text += f"🔹 {line}\n"
-    report_text += "\n➖➖➖➖➖➖➖➖➖➖➖➖➖\n"
-    report_text += f"💰 This Week Total Commission: ₹{total_7_days}"
+        report_text += f"{line}\n\n"
+    report_text += "➖➖➖➖➖➖➖➖➖➖➖➖➖\n"
+    report_text += f"💰 <b>This Week Total Commission: ₹{total_7_days}</b>"
     
-    bot.send_message(message.chat.id, report_text)
+    bot.send_message(message.chat.id, report_text, parse_mode='HTML')
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_my_bal")
 def callback_check_my_bal(call):
@@ -328,60 +349,77 @@ def detect_table(message):
     if len(lines) >= 3:
         player1 = lines[0].replace('@', '').strip()
         player2 = lines[1].replace('@', '').strip()
+        last_line_text = lines[-1]
         
-        last_line = lines[-1]
-        match = re.search(r'(\d+)', last_line)
+        match = re.search(r'(\d+)', last_line_text)
         
         if match:
             try:
                 amount = float(match.group(1))
                 
                 markup = InlineKeyboardMarkup()
-                # Callback data uses '|' pipe symbol to handle usernames with underscores safely
-                btn1 = InlineKeyboardButton("#1 won", callback_data=f"w|{player1}|{player2}|{amount}")
-                btn2 = InlineKeyboardButton("#2 won", callback_data=f"w|{player2}|{player1}|{amount}")
+                # Encodes message_id of original admin table to delete it later
+                btn1 = InlineKeyboardButton("#1 won", callback_data=f"w|1|{player1}|{player2}|{amount}|{message.message_id}|{last_line_text}")
+                btn2 = InlineKeyboardButton("#2 won", callback_data=f"w|2|{player2}|{player1}|{amount}|{message.message_id}|{last_line_text}")
                 markup.row(btn1, btn2)
                 
-                bot.reply_to(message, f"🎲 Table Set!\n\n1. @{player1}\n2. @{player2}\n💰 Amount: ₹{amount}", reply_markup=markup)
+                bot.reply_to(message, f"🎲 <b>Table Set!</b>\n\n(1). @{player1}\n(2). @{player2}\n💰 {last_line_text}", reply_markup=markup, parse_mode='HTML')
                 
             except ValueError:
                 pass
 
-# 🏆 Winner Click Handler (Fixed Underscore Bug + 5% Commission + Auto Delete)
+# 🏆 Winner Click Handler (Image Exact Style + Admin Table Delete)
 @bot.callback_query_handler(func=lambda call: call.data.startswith('w|'))
 def process_winner(call):
-    bot.answer_callback_query(call.id, "Processing Result...")
+    bot.answer_callback_query(call.id, "Updating Result...")
 
     if not check_group_eligibility(call.message.chat.id) or not is_chat_admin(call.message.chat.id, call.from_user.id):
         bot.answer_callback_query(call.id, "❌ Only Admins can set result!", show_alert=True)
         return
 
     try:
-        # Split by '|' pipe
         data_parts = call.data.split('|')
-        winner = data_parts[1]
-        loser = data_parts[2]
-        full_amount = float(data_parts[3])
+        won_choice = data_parts[1]       # '1' or '2'
+        winner = data_parts[2]
+        loser = data_parts[3]
+        full_amount = float(data_parts[4])
+        orig_admin_msg_id = int(data_parts[5])
+        last_line_text = data_parts[6]
         
-        # 5% Cut Math
+        # Calculate 5% cut
         commission_cut = (full_amount * COMMISSION_RATE) / 100.0
         winner_net_amount = full_amount - commission_cut
         
-        # Database Update
+        # Update Balances
         update_balance(winner, winner_net_amount)
         update_balance(loser, -full_amount)
         record_commission(call.message.chat.id, commission_cut)
         
-        disp_winner_amt = int(winner_net_amount) if winner_net_amount.is_integer() else round(winner_net_amount, 2)
-        disp_comm = int(commission_cut) if commission_cut.is_integer() else round(commission_cut, 2)
+        # Format text exactly like attached screenshot
+        if won_choice == '1':
+            p1_str = f"(1). {winner} ✔️✔️"
+            p2_str = f"(2). {loser}"
+        else:
+            p1_str = f"(1). {loser}"
+            p2_str = f"(2). {winner} ✔️✔️"
+
+        result_msg_text = f"🎲 <i>Table Status</i>\n\n{p1_str}\n\n{p2_str}\n\n{last_line_text}"
         
-        # Result text edit
-        bot.edit_message_text(f"🏆 Table Result\n\n1. @{winner} ✔️✔️ (+₹{disp_winner_amt})\n2. @{loser} (-₹{full_amount})\n💰 Table: ₹{full_amount} | 📉 5% Comm: ₹{disp_comm}", 
-                              call.message.chat.id, call.message.message_id)
+        # Delete Admin's original table message
+        try:
+            bot.delete_message(call.message.chat.id, orig_admin_msg_id)
+        except Exception:
+            pass
+
+        # Send fresh status table message by Bot
+        bot.send_message(call.message.chat.id, result_msg_text, parse_mode='HTML')
         
-        # Auto Delete Table Result Message After 2 Seconds
-        threading.Thread(target=auto_delete_message, args=(call.message.chat.id, call.message.message_id, 2)).start()
-        
+        # Delete Bot's button prompt message
+        try:
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+        except Exception:
+            pass
+
         # INSTANT LIVE LIST UPDATE
         update_live_list(call.message.chat.id, call.message.chat.title)
         
@@ -395,6 +433,5 @@ if __name__ == "__main__":
     setup_db()
     threading.Thread(target=run_flask).start()
     
-    print("Bot is 100% fixed and running with clickable profile links...")
+    print("Bot is fully upgraded with alphabetical A-Z list & net profit reports...")
     bot.polling(none_stop=True)
-    
