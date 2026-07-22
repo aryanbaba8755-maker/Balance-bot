@@ -63,6 +63,7 @@ def update_balance(username, amount):
         if row is None:
             cursor.execute('INSERT INTO users (username, balance) VALUES (?, ?)', (clean_username, float(amount)))
         else:
+            # Current Balance + Amount (Maths Fix: 500 - 600 = -100)
             new_bal = row[0] + float(amount)
             cursor.execute('UPDATE users SET balance = ? WHERE LOWER(username) = ?', (new_bal, clean_username))
         conn.commit()
@@ -94,7 +95,6 @@ def get_total_group_minus():
     cursor.execute('SELECT SUM(balance) FROM users WHERE balance < 0')
     row = cursor.fetchone()
     conn.close()
-    # Negative balance values sum -> return positive number representing total minus
     return abs(row[0]) if row and row[0] else 0.0
 
 def record_commission(chat_id, comm_amount):
@@ -127,9 +127,7 @@ def get_7_days_commission_report(chat_id):
         total_7_days_comm += comm_sum
         
         disp_comm = int(comm_sum) if comm_sum.is_integer() else round(comm_sum, 2)
-        
-        # Calculate daily net (Commission - Minus)
-        daily_minus = group_minus if i == 0 else 0.0  # Current live minus for today
+        daily_minus = group_minus if i == 0 else 0.0
         net_profit = comm_sum - daily_minus
         disp_net = int(net_profit) if net_profit.is_integer() else round(net_profit, 2)
         disp_minus = int(daily_minus) if daily_minus.is_integer() else round(daily_minus, 2)
@@ -203,7 +201,6 @@ def generate_live_list_text(chat_title):
     if not records:
         text += "No records found.\n"
     else:
-        # Grouping alphabetically
         alphabet_groups = {}
         for username, balance in records:
             first_char = username[0].upper() if username else '#'
@@ -227,6 +224,7 @@ def generate_live_list_text(chat_title):
     text += "\n⏺️ Check Full Records..."
     return text
 
+# 🛑 STRICT SINGLE PINNED LIST EDIT LOGIC
 def update_live_list(chat_id, chat_title):
     if not check_group_eligibility(chat_id):
         return
@@ -237,18 +235,22 @@ def update_live_list(chat_id, chat_title):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("ℹ️ Check My Balance (/balanceinfo)", callback_data="check_my_bal"))
 
+    # Case 1: Pinned Msg PEHLE SE HAI -> ONLY EDIT (NO NEW MESSAGE)
     if pinned_msg_id:
         try:
             bot.edit_message_text(list_text, chat_id, pinned_msg_id, reply_markup=markup, parse_mode='HTML')
-        except Exception:
+            return # Simply edit & return! Never send new message
+        except Exception as e:
+            # Agar edit fail ho jaye (e.g. kisi ne msg delete kar diya), tabhi neeche Naya banaega
             pass
-    else:
-        try:
-            msg = bot.send_message(chat_id, list_text, reply_markup=markup, parse_mode='HTML')
-            bot.pin_chat_message(chat_id, msg.message_id)
-            set_pinned_msg(chat_id, msg.message_id)
-        except Exception:
-            pass
+
+    # Case 2: Pinned Msg NAHI HAI -> Pehli baar banao aur PIN karo
+    try:
+        msg = bot.send_message(chat_id, list_text, reply_markup=markup, parse_mode='HTML')
+        bot.pin_chat_message(chat_id, msg.message_id)
+        set_pinned_msg(chat_id, msg.message_id)
+    except Exception as e:
+        pass
 
 # ==========================================
 # 🤖 COMMANDS & HANDLERS
@@ -262,10 +264,14 @@ def on_join(message):
                 bot.leave_chat(message.chat.id)
                 return
 
+# Force Fresh List (Sirf tabhi naya message bheje aur pin kare jab Admin yeh command de)
 @bot.message_handler(commands=['start_list'])
 def manual_list_trigger(message):
     if not check_group_eligibility(message.chat.id) or not is_chat_admin(message.chat.id, message.from_user.id):
         return
+    
+    # Old pinned DB clear karke bilkul nayi list shuru karna
+    set_pinned_msg(message.chat.id, None)
     update_live_list(message.chat.id, message.chat.title)
     threading.Thread(target=auto_delete_message, args=(message.chat.id, message.message_id, 1)).start()
 
@@ -290,6 +296,7 @@ def handle_add_minus(message):
             threading.Thread(target=auto_delete_message, args=(message.chat.id, reply_msg.message_id, 2)).start()
             threading.Thread(target=auto_delete_message, args=(message.chat.id, message.message_id, 2)).start()
             
+            # Live Edit Existing Pinned List
             update_live_list(message.chat.id, message.chat.title)
             
         except ValueError:
@@ -358,7 +365,6 @@ def detect_table(message):
                 amount = float(match.group(1))
                 
                 markup = InlineKeyboardMarkup()
-                # Encodes message_id of original admin table to delete it later
                 btn1 = InlineKeyboardButton("#1 won", callback_data=f"w|1|{player1}|{player2}|{amount}|{message.message_id}|{last_line_text}")
                 btn2 = InlineKeyboardButton("#2 won", callback_data=f"w|2|{player2}|{player1}|{amount}|{message.message_id}|{last_line_text}")
                 markup.row(btn1, btn2)
@@ -368,7 +374,7 @@ def detect_table(message):
             except ValueError:
                 pass
 
-# 🏆 Winner Click Handler (Image Exact Style + Admin Table Delete)
+# 🏆 Winner Click Handler (Net Calculation + Single Pinned Edit)
 @bot.callback_query_handler(func=lambda call: call.data.startswith('w|'))
 def process_winner(call):
     bot.answer_callback_query(call.id, "Updating Result...")
@@ -379,23 +385,23 @@ def process_winner(call):
 
     try:
         data_parts = call.data.split('|')
-        won_choice = data_parts[1]       # '1' or '2'
+        won_choice = data_parts[1]
         winner = data_parts[2]
         loser = data_parts[3]
         full_amount = float(data_parts[4])
         orig_admin_msg_id = int(data_parts[5])
         last_line_text = data_parts[6]
         
-        # Calculate 5% cut
+        # 5% Cut Math
         commission_cut = (full_amount * COMMISSION_RATE) / 100.0
         winner_net_amount = full_amount - commission_cut
         
-        # Update Balances
+        # ACCURATE NET BALANCE UPDATE (Prev Balance + Net Won / Minus Loss)
         update_balance(winner, winner_net_amount)
         update_balance(loser, -full_amount)
         record_commission(call.message.chat.id, commission_cut)
         
-        # Format text exactly like attached screenshot
+        # Format text like screenshot
         if won_choice == '1':
             p1_str = f"(1). {winner} ✔️✔️"
             p2_str = f"(2). {loser}"
@@ -405,22 +411,22 @@ def process_winner(call):
 
         result_msg_text = f"🎲 <i>Table Status</i>\n\n{p1_str}\n\n{p2_str}\n\n{last_line_text}"
         
-        # Delete Admin's original table message
+        # Delete Admin's original table
         try:
             bot.delete_message(call.message.chat.id, orig_admin_msg_id)
         except Exception:
             pass
 
-        # Send fresh status table message by Bot
+        # Send status
         bot.send_message(call.message.chat.id, result_msg_text, parse_mode='HTML')
         
-        # Delete Bot's button prompt message
+        # Delete Bot prompt
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
         except Exception:
             pass
 
-        # INSTANT LIVE LIST UPDATE
+        # EDIT SAME PINNED LIST (NO NEW PIN!)
         update_live_list(call.message.chat.id, call.message.chat.title)
         
     except Exception as e:
@@ -433,5 +439,6 @@ if __name__ == "__main__":
     setup_db()
     threading.Thread(target=run_flask).start()
     
-    print("Bot is fully upgraded with alphabetical A-Z list & net profit reports...")
+    print("Bot fixed: Single permanent pinned edit & exact net balance math active!")
     bot.polling(none_stop=True)
+        
