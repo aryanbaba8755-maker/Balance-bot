@@ -24,14 +24,14 @@ app = Flask(__name__)
 # ==========================================
 @app.route('/')
 def home():
-    return "Bot is running perfectly!"
+    return "Bot is active and running!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
 # ==========================================
-# 🗄️ DATABASE FUNCTIONS (Fixed Multi-threading)
+# 🗄️ DATABASE FUNCTIONS
 # ==========================================
 def get_db():
     return sqlite3.connect(DB_NAME, timeout=10, check_same_thread=False)
@@ -115,17 +115,17 @@ def get_7_days_commission_report(chat_id):
         cursor.execute('SELECT SUM(amount), COUNT(id) FROM commissions WHERE chat_id = ? AND date_str = ?', (chat_id, date_str))
         row = cursor.fetchone()
         
-        comm_sum = row[0] if row[0] else 0.0
-        table_count = row[1] if row[1] else 0
+        comm_sum = row[0] if row and row[0] else 0.0
+        table_count = row[1] if row and row[1] else 0
         total_7_days += comm_sum
         
         disp_comm = int(comm_sum) if comm_sum.is_integer() else round(comm_sum, 2)
         
         if i == 0:
-            report_lines.append(f"<b>Today ({date_str})</b>: ₹{disp_comm} ({table_count} Tables)")
+            report_lines.append(f"Today ({date_str}): ₹{disp_comm} ({table_count} Tables)")
         else:
             date_fmt = date_obj.strftime('%d %b')
-            report_lines.append(f"<b>{date_fmt}</b>: ₹{disp_comm} ({table_count} Tables)")
+            report_lines.append(f"{date_fmt}: ₹{disp_comm} ({table_count} Tables)")
             
     conn.close()
     disp_total = int(total_7_days) if total_7_days.is_integer() else round(total_7_days, 2)
@@ -147,7 +147,7 @@ def set_pinned_msg(chat_id, msg_id):
     conn.close()
 
 # ==========================================
-# 🛡️ UTILITY & SECURITY
+# 🛡️ SECURITY & UTILITY
 # ==========================================
 def auto_delete_message(chat_id, message_id, delay=2):
     time.sleep(delay)
@@ -178,14 +178,14 @@ def is_chat_admin(chat_id, user_id):
         return False
 
 # ==========================================
-# 📜 LIST GENERATOR
+# 📜 LIST GENERATOR (Profile Clickable Links Format)
 # ==========================================
 def generate_live_list_text(chat_title):
     records = get_all_balances()
     text = f"✨ Thanks everyone for playing with us! Your support means a lot ❤️\n"
     text += f"➖➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
     text += f"👉 For Rules : Contact Admins\n\n"
-    text += f"💾 Balance Records (Page 1/1) - **{chat_title}**:\n\n"
+    text += f"💼 <b>Balance Records (Page 1/1):</b>\n\n"
     
     if not records:
         text += "No records found.\n"
@@ -193,9 +193,13 @@ def generate_live_list_text(chat_title):
         count = 1
         for i, (username, balance) in enumerate(records):
             disp_balance = int(balance) if balance.is_integer() else round(balance, 2)
-            text += f"{count}. {username} = {disp_balance}\n"
+            # Profile link syntax (Clicking name opens user's Telegram profile)
+            user_link = f"<a href='https://t.me/{username}'>{username}</a>"
+            text += f"{count}. {user_link} = {disp_balance}\n"
+            
+            # Separator line every 3 records
             if count % 3 == 0 and i != len(records) - 1:
-                text += "≕≔≕≔≕≔≕≔≕≔≕≔≕≔≕≔≕≔\n"
+                text += "======================\n"
             count += 1
             
     text += "\n➖➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
@@ -214,15 +218,15 @@ def update_live_list(chat_id, chat_title):
 
     if pinned_msg_id:
         try:
-            bot.edit_message_text(list_text, chat_id, pinned_msg_id, reply_markup=markup, parse_mode='Markdown')
-        except Exception as e:
+            bot.edit_message_text(list_text, chat_id, pinned_msg_id, reply_markup=markup, parse_mode='HTML')
+        except Exception:
             pass
     else:
         try:
-            msg = bot.send_message(chat_id, list_text, reply_markup=markup, parse_mode='Markdown')
+            msg = bot.send_message(chat_id, list_text, reply_markup=markup, parse_mode='HTML')
             bot.pin_chat_message(chat_id, msg.message_id)
             set_pinned_msg(chat_id, msg.message_id)
-        except Exception as e:
+        except Exception:
             pass
 
 # ==========================================
@@ -272,21 +276,20 @@ def handle_add_minus(message):
 
 @bot.message_handler(commands=['commission'])
 def show_commission_report(message):
-    if not check_group_eligibility(message.chat.id) or not is_chat_admin(message.chat.id, message.from_user.id):
+    if not is_chat_admin(message.chat.id, message.from_user.id):
         return
 
     daily_lines, total_7_days = get_7_days_commission_report(message.chat.id)
     
-    report_text = "📊 <b>7-DAYS COMMISSION REPORT</b> 📊\n"
+    report_text = "📊 7-DAYS COMMISSION REPORT 📊\n"
     report_text += "➖➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
     for line in daily_lines:
         report_text += f"🔹 {line}\n"
     report_text += "\n➖➖➖➖➖➖➖➖➖➖➖➖➖\n"
-    report_text += f"💰 <b>This Week Total Commission: ₹{total_7_days}</b>"
+    report_text += f"💰 This Week Total Commission: ₹{total_7_days}"
     
-    bot.send_message(message.chat.id, report_text, parse_mode='HTML')
+    bot.send_message(message.chat.id, report_text)
 
-# ℹ️ /balanceinfo Button Handler (Fixed Instant Response)
 @bot.callback_query_handler(func=lambda call: call.data == "check_my_bal")
 def callback_check_my_bal(call):
     username = call.from_user.username
@@ -296,8 +299,6 @@ def callback_check_my_bal(call):
     
     bal = get_user_balance(username)
     disp_bal = int(bal) if bal.is_integer() else round(bal, 2)
-    
-    # Direct Pop-up Alert
     bot.answer_callback_query(call.id, f"👤 @{username}\n💰 Aapka Balance: ₹{disp_bal}", show_alert=True)
 
 @bot.message_handler(commands=['balanceinfo'])
@@ -311,7 +312,7 @@ def cmd_balance_info(message):
     bal = get_user_balance(username)
     disp_bal = int(bal) if bal.is_integer() else round(bal, 2)
     
-    msg = bot.reply_to(message, f"👤 @{username}\n💰 Aapka Balance: <b>₹{disp_bal}</b>", parse_mode='HTML')
+    msg = bot.reply_to(message, f"👤 @{username}\n💰 Aapka Balance: ₹{disp_bal}")
     threading.Thread(target=auto_delete_message, args=(message.chat.id, msg.message_id, 5)).start()
     threading.Thread(target=auto_delete_message, args=(message.chat.id, message.message_id, 2)).start()
 
@@ -336,19 +337,19 @@ def detect_table(message):
                 amount = float(match.group(1))
                 
                 markup = InlineKeyboardMarkup()
-                btn1 = InlineKeyboardButton("#1 won", callback_data=f"w_{player1}_{player2}_{amount}")
-                btn2 = InlineKeyboardButton("#2 won", callback_data=f"w_{player2}_{player1}_{amount}")
+                # Callback data uses '|' pipe symbol to handle usernames with underscores safely
+                btn1 = InlineKeyboardButton("#1 won", callback_data=f"w|{player1}|{player2}|{amount}")
+                btn2 = InlineKeyboardButton("#2 won", callback_data=f"w|{player2}|{player1}|{amount}")
                 markup.row(btn1, btn2)
                 
-                bot.reply_to(message, f"🎲 <b>Table Set!</b>\n\n1. @{player1}\n2. @{player2}\n💰 Amount: ₹{amount}", reply_markup=markup, parse_mode='HTML')
+                bot.reply_to(message, f"🎲 Table Set!\n\n1. @{player1}\n2. @{player2}\n💰 Amount: ₹{amount}", reply_markup=markup)
                 
             except ValueError:
                 pass
 
-# 🏆 Winner Click Handler (Fixed Loading Issue & Balance Sync)
-@bot.callback_query_handler(func=lambda call: call.data.startswith('w_'))
+# 🏆 Winner Click Handler (Fixed Underscore Bug + 5% Commission + Auto Delete)
+@bot.callback_query_handler(func=lambda call: call.data.startswith('w|'))
 def process_winner(call):
-    # Turant Telegram ko response dena taaki Loading symbol hat jaye
     bot.answer_callback_query(call.id, "Processing Result...")
 
     if not check_group_eligibility(call.message.chat.id) or not is_chat_admin(call.message.chat.id, call.from_user.id):
@@ -356,16 +357,17 @@ def process_winner(call):
         return
 
     try:
-        data_parts = call.data.split('_')
+        # Split by '|' pipe
+        data_parts = call.data.split('|')
         winner = data_parts[1]
         loser = data_parts[2]
         full_amount = float(data_parts[3])
         
-        # 5% Cut Calculation
+        # 5% Cut Math
         commission_cut = (full_amount * COMMISSION_RATE) / 100.0
         winner_net_amount = full_amount - commission_cut
         
-        # Balance DB update
+        # Database Update
         update_balance(winner, winner_net_amount)
         update_balance(loser, -full_amount)
         record_commission(call.message.chat.id, commission_cut)
@@ -374,10 +376,13 @@ def process_winner(call):
         disp_comm = int(commission_cut) if commission_cut.is_integer() else round(commission_cut, 2)
         
         # Result text edit
-        bot.edit_message_text(f"🏆 <b>Table Result</b>\n\n1. @{winner} ✔️✔️ (+₹{disp_winner_amt})\n2. @{loser} (-₹{full_amount})\n💰 Table: ₹{full_amount} | 📉 5% Comm: ₹{disp_comm}", 
-                              call.message.chat.id, call.message.message_id, parse_mode='HTML')
+        bot.edit_message_text(f"🏆 Table Result\n\n1. @{winner} ✔️✔️ (+₹{disp_winner_amt})\n2. @{loser} (-₹{full_amount})\n💰 Table: ₹{full_amount} | 📉 5% Comm: ₹{disp_comm}", 
+                              call.message.chat.id, call.message.message_id)
         
-        # INSTANT LIST EDIT
+        # Auto Delete Table Result Message After 2 Seconds
+        threading.Thread(target=auto_delete_message, args=(call.message.chat.id, call.message.message_id, 2)).start()
+        
+        # INSTANT LIVE LIST UPDATE
         update_live_list(call.message.chat.id, call.message.chat.title)
         
     except Exception as e:
@@ -390,5 +395,6 @@ if __name__ == "__main__":
     setup_db()
     threading.Thread(target=run_flask).start()
     
-    print("Bot is 100% fixed and running...")
+    print("Bot is 100% fixed and running with clickable profile links...")
     bot.polling(none_stop=True)
+    
