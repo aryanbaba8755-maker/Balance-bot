@@ -24,7 +24,7 @@ app = Flask(__name__)
 # ==========================================
 @app.route('/')
 def home():
-    return "Bot is running ultra-smoothly!"
+    return "Bot is active!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -48,8 +48,7 @@ def setup_db():
         conn.commit()
 
 def parse_amount(amount_str):
-    """Parses amount string like 100, 1k, 2k, 100k into float numbers"""
-    amount_str = amount_str.lower().replace('₹', '').strip()
+    amount_str = str(amount_str).lower().replace('₹', '').strip()
     try:
         if 'k' in amount_str:
             return float(amount_str.replace('k', '')) * 1000
@@ -60,7 +59,7 @@ def parse_amount(amount_str):
         return None
 
 def update_balance(username, amount, user_id=0):
-    clean_username = username.replace('@', '').strip().lower()
+    clean_username = str(username).replace('@', '').strip().lower()
     if not clean_username:
         return
     with sqlite3.connect(DB_NAME, timeout=30) as conn:
@@ -76,7 +75,7 @@ def update_balance(username, amount, user_id=0):
         conn.commit()
 
 def get_user_balance(username):
-    clean_username = username.replace('@', '').strip().lower()
+    clean_username = str(username).replace('@', '').strip().lower()
     with sqlite3.connect(DB_NAME, timeout=30) as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT balance FROM users WHERE LOWER(username) = ?', (clean_username,))
@@ -161,19 +160,7 @@ def auto_delete_message(chat_id, message_id, delay=1):
     except Exception:
         pass
 
-def check_group_eligibility(chat_id):
-    try:
-        bot_member = bot.get_chat_member(chat_id, bot.get_me().id)
-        if bot_member.status not in ['administrator', 'creator']:
-            return False
-        owner_member = bot.get_chat_member(chat_id, OWNER_ID)
-        if owner_member.status not in ['administrator', 'creator']:
-            return False
-        return True
-    except Exception:
-        return False
-
-def is_chat_admin(chat_id, user_id):
+def is_admin_or_owner(chat_id, user_id):
     if user_id == OWNER_ID:
         return True
     try:
@@ -183,7 +170,7 @@ def is_chat_admin(chat_id, user_id):
         return False
 
 # ==========================================
-# 📜 ALPHABETICAL A-Z LIST GENERATOR (No Web Link Preview Box)
+# 📜 ALPHABETICAL A-Z LIST GENERATOR
 # ==========================================
 def generate_live_list_text(chat_title):
     records = get_all_balances()
@@ -209,7 +196,6 @@ def generate_live_list_text(chat_title):
         for key in sorted_keys:
             for username, balance, u_id in alphabet_groups[key]:
                 disp_balance = int(balance) if balance.is_integer() else round(balance, 2)
-                # Pure Text Mention (Clicking name opens profile, but NO link preview card is created)
                 if u_id and u_id != 0:
                     user_link = f"<a href='tg://user?id={u_id}'>{username}</a>"
                 else:
@@ -223,16 +209,12 @@ def generate_live_list_text(chat_title):
     return text
 
 def update_live_list(chat_id, chat_title):
-    if not check_group_eligibility(chat_id):
-        return
-
     list_text = generate_live_list_text(chat_title)
     pinned_msg_id = get_pinned_msg(chat_id)
     
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("ℹ️ Check My Balance (/balanceinfo)", callback_data="check_my_bal"))
 
-    # disable_web_page_preview=True prevents Telegram from showing the green preview card
     if pinned_msg_id:
         try:
             bot.edit_message_text(list_text, chat_id, pinned_msg_id, reply_markup=markup, parse_mode='HTML', disable_web_page_preview=True)
@@ -261,15 +243,15 @@ def on_join(message):
 
 @bot.message_handler(commands=['start_list'])
 def manual_list_trigger(message):
-    if not check_group_eligibility(message.chat.id) or not is_chat_admin(message.chat.id, message.from_user.id):
+    if not is_admin_or_owner(message.chat.id, message.from_user.id):
         return
     update_live_list(message.chat.id, message.chat.title)
     threading.Thread(target=auto_delete_message, args=(message.chat.id, message.message_id, 1)).start()
 
-# 💰 SMART /add & /minus (Handles replies to users & usernames)
+# 💰 REAL-TIME /add & /minus HANDLER
 @bot.message_handler(commands=['add', 'minus'])
 def handle_add_minus(message):
-    if not check_group_eligibility(message.chat.id) or not is_chat_admin(message.chat.id, message.from_user.id):
+    if not is_admin_or_owner(message.chat.id, message.from_user.id):
         return
 
     parts = message.text.split()
@@ -277,22 +259,21 @@ def handle_add_minus(message):
     target_user_id = 0
     amount_str = None
 
-    # Reply Handling
+    # Reply logic
     if message.reply_to_message:
         replied_user = message.reply_to_message.from_user
         if replied_user and not replied_user.is_bot:
             target_username = replied_user.username
             target_user_id = replied_user.id
         elif message.reply_to_message.text:
-            # Extract @username if replying to a text message mentioning a user
-            usernames_in_text = re.findall(r'@(\w+)', message.reply_to_message.text)
-            if usernames_in_text:
-                target_username = usernames_in_text[0]
+            usernames = re.findall(r'@(\w+)', message.reply_to_message.text)
+            if usernames:
+                target_username = usernames[0]
         
         if len(parts) >= 2:
             amount_str = parts[1]
 
-    # Direct Command Handling: /add 500 @username or /add 2k @username
+    # Direct command logic: /add 500 @username or /add 2k @username
     if not target_username and len(parts) >= 3:
         amount_str = parts[1]
         target_username = parts[2].replace('@', '').strip()
@@ -312,7 +293,7 @@ def handle_add_minus(message):
             
             update_live_list(message.chat.id, message.chat.title)
 
-# 👤 SMART /balance /balanceinfo
+# 👤 /balance /balanceinfo HANDLER
 @bot.message_handler(commands=['balance', 'balanceinfo'])
 def handle_balance_check(message):
     target_username = None
@@ -339,7 +320,7 @@ def handle_balance_check(message):
 
 @bot.message_handler(commands=['commission'])
 def show_commission_report(message):
-    if not is_chat_admin(message.chat.id, message.from_user.id):
+    if not is_admin_or_owner(message.chat.id, message.from_user.id):
         return
 
     daily_lines, total_7_days = get_7_days_commission_report(message.chat.id)
@@ -364,10 +345,10 @@ def callback_check_my_bal(call):
     disp_bal = int(bal) if bal.is_integer() else round(bal, 2)
     bot.answer_callback_query(call.id, f"👤 @{username}\n💰 Aapka Balance: ₹{disp_bal}", show_alert=True)
 
-# 🎲 Table Auto Detection
+# 🎲 TABLE DETECTION
 @bot.message_handler(func=lambda message: message.text and ('✅' in message.text or '✔️' in message.text or 'full' in message.text.lower()))
 def detect_table(message):
-    if not check_group_eligibility(message.chat.id) or not is_chat_admin(message.chat.id, message.from_user.id):
+    if not is_admin_or_owner(message.chat.id, message.from_user.id):
         return
 
     text = message.text.strip()
@@ -394,12 +375,12 @@ def detect_table(message):
             except ValueError:
                 pass
 
-# 🏆 Winner Click Handler
+# 🏆 WINNER CLICK HANDLER
 @bot.callback_query_handler(func=lambda call: call.data.startswith('w|'))
 def process_winner(call):
     bot.answer_callback_query(call.id, "Updating Result...")
 
-    if not check_group_eligibility(call.message.chat.id) or not is_chat_admin(call.message.chat.id, call.from_user.id):
+    if not is_admin_or_owner(call.message.chat.id, call.from_user.id):
         bot.answer_callback_query(call.id, "❌ Only Admins can set result!", show_alert=True)
         return
 
@@ -446,5 +427,5 @@ if __name__ == "__main__":
     setup_db()
     threading.Thread(target=run_flask).start()
     
-    print("Bot updated with link preview disabled and smart reply handling...")
+    print("Bot updated with direct admin check...")
     bot.polling(none_stop=True)
