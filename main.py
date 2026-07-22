@@ -2,7 +2,7 @@ import telebot
 import threading
 import time
 
-TOKEN = '8898313784:AAHjuGjYKluW9sfJtfNeRZbQShKT5Wt9X1s"
+TOKEN = "8898313784:AAHjuGjYKluW9sfJtfNeRZbQShKT5Wt9X1s"
 bot = telebot.TeleBot("8898313784:AAHjuGjYKluW9sfJtfNeRZbQShKT5Wt9X1s")
 
 OWNER_ID = 2107169286 # Yahan bot owner ki apni Telegram User ID aayegi
