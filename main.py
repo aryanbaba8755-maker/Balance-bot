@@ -259,7 +259,6 @@ def handle_add_minus(message):
     target_user_id = 0
     amount_str = None
 
-    # Reply logic
     if message.reply_to_message:
         replied_user = message.reply_to_message.from_user
         if replied_user and not replied_user.is_bot:
@@ -273,7 +272,6 @@ def handle_add_minus(message):
         if len(parts) >= 2:
             amount_str = parts[1]
 
-    # Direct command logic: /add 500 @username or /add 2k @username
     if not target_username and len(parts) >= 3:
         amount_str = parts[1]
         target_username = parts[2].replace('@', '').strip()
@@ -345,8 +343,8 @@ def callback_check_my_bal(call):
     disp_bal = int(bal) if bal.is_integer() else round(bal, 2)
     bot.answer_callback_query(call.id, f"👤 @{username}\n💰 Aapka Balance: ₹{disp_bal}", show_alert=True)
 
-# 🎲 TABLE DETECTION
-@bot.message_handler(func=lambda message: message.text and ('✅' in message.text or '✔️' in message.text or 'full' in message.text.lower()))
+# 🎲 TABLE DETECTION (Strict Tick Mark Check & Auto Delete Admin Table)
+@bot.message_handler(func=lambda message: message.text and ('✅' in message.text or '✔️' in message.text))
 def detect_table(message):
     if not is_admin_or_owner(message.chat.id, message.from_user.id):
         return
@@ -359,6 +357,7 @@ def detect_table(message):
         player2 = lines[1].replace('@', '').strip()
         last_line_text = lines[-1]
         
+        # Match digits from last line containing tick mark (e.g., extracts 500 from 500✅ hc,lcj,tcj,bcj,full)
         match = re.search(r'(\d+)', last_line_text)
         
         if match:
@@ -370,8 +369,14 @@ def detect_table(message):
                 btn2 = InlineKeyboardButton("#2 won", callback_data=f"w|2|{player2}|{player1}|{amount}|{last_line_text}")
                 markup.row(btn1, btn2)
                 
-                bot.reply_to(message, f"🎲 <b>Table Set!</b>\n\n(1). @{player1}\n(2). @{player2}\n💰 {last_line_text}", reply_markup=markup, parse_mode='HTML')
+                bot.send_message(message.chat.id, f"🎲 <b>Table Set!</b>\n\n(1). @{player1}\n(2). @{player2}\n💰 {last_line_text}", reply_markup=markup, parse_mode='HTML')
                 
+                # Delete Admin's original table message immediately
+                try:
+                    bot.delete_message(message.chat.id, message.message_id)
+                except Exception:
+                    pass
+
             except ValueError:
                 pass
 
@@ -410,6 +415,7 @@ def process_winner(call):
         
         bot.send_message(call.message.chat.id, result_msg_text, parse_mode='HTML')
         
+        # Delete Bot's table set prompt message
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
         except Exception:
@@ -427,5 +433,6 @@ if __name__ == "__main__":
     setup_db()
     threading.Thread(target=run_flask).start()
     
-    print("Bot updated with direct admin check...")
+    print("Bot updated with admin table auto-delete & tick mark filter...")
     bot.polling(none_stop=True)
+    
