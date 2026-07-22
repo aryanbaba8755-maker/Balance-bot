@@ -24,14 +24,14 @@ app = Flask(__name__)
 # ==========================================
 @app.route('/')
 def home():
-    return "Bot is running ultra-smoothly!"
+    return "Bot is running perfectly!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
 # ==========================================
-# 🗄️ DATABASE FUNCTIONS (Fixed Concurrency)
+# 🗄️ DATABASE FUNCTIONS
 # ==========================================
 def setup_db():
     with sqlite3.connect(DB_NAME, timeout=30) as conn:
@@ -46,6 +46,18 @@ def setup_db():
                             timestamp REAL
                         )''')
         conn.commit()
+
+def parse_amount(amount_str):
+    """Parses amount string like 100, 1k, 2k, 100k into float numbers"""
+    amount_str = amount_str.lower().replace('₹', '').strip()
+    try:
+        if 'k' in amount_str:
+            return float(amount_str.replace('k', '')) * 1000
+        elif 'm' in amount_str:
+            return float(amount_str.replace('m', '')) * 1000000
+        return float(amount_str)
+    except ValueError:
+        return None
 
 def update_balance(username, amount):
     clean_username = username.replace('@', '').strip().lower()
@@ -170,13 +182,12 @@ def is_chat_admin(chat_id, user_id):
         return False
 
 # ==========================================
-# 📜 ALPHABETICAL A-Z LIST GENERATOR
+# 📜 ALPHABETICAL A-Z LIST GENERATOR (Custom Header)
 # ==========================================
 def generate_live_list_text(chat_title):
     records = get_all_balances()
-    text = f"✨ Thanks everyone for playing with us! Your support means a lot ❤️\n"
+    text = f"🙏🏻 Welcome & thanks everyone playing and winning with us we are always there for you if want any kind of information please contact @Carry_Bhau\n"
     text += f"➖➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
-    text += f"👉 For Rules : Contact Admins\n\n"
     text += f"💼 <b>Balance Records (Page 1/1):</b>\n\n"
     
     if not records:
@@ -241,39 +252,79 @@ def on_join(message):
                 bot.leave_chat(message.chat.id)
                 return
 
+# Persistent List: Never deletes old data, just refreshes pin/edit
 @bot.message_handler(commands=['start_list'])
 def manual_list_trigger(message):
     if not check_group_eligibility(message.chat.id) or not is_chat_admin(message.chat.id, message.from_user.id):
         return
-    set_pinned_msg(message.chat.id, None)
     update_live_list(message.chat.id, message.chat.title)
     threading.Thread(target=auto_delete_message, args=(message.chat.id, message.message_id, 1)).start()
 
+# 💰 ADVANCED /add & /minus (Direct + Reply Support)
 @bot.message_handler(commands=['add', 'minus'])
 def handle_add_minus(message):
     if not check_group_eligibility(message.chat.id) or not is_chat_admin(message.chat.id, message.from_user.id):
         return
 
     parts = message.text.split()
-    if len(parts) >= 3:
-        try:
-            amount = float(parts[1])
-            username = parts[2].replace('@', '').strip()
-            
+    target_username = None
+    amount_str = None
+
+    # Case 1: Reply to a user's message e.g. /add 500 or /minus 1k
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target_username = message.reply_to_message.from_user.username
+        if len(parts) >= 2:
+            amount_str = parts[1]
+
+    # Case 2: Direct command e.g. /add 500 @username or /minus 2k @username
+    elif len(parts) >= 3:
+        amount_str = parts[1]
+        target_username = parts[2].replace('@', '').strip()
+
+    if target_username and amount_str:
+        amount = parse_amount(amount_str)
+        if amount is not None:
             if message.text.startswith('/minus'):
                 amount = -amount
-            
-            update_balance(username, amount)
+
+            update_balance(target_username, amount)
             action = "added" if amount > 0 else "deducted"
-            reply_msg = bot.reply_to(message, f"✅ ₹{abs(amount)} {action} for @{username}")
+            reply_msg = bot.reply_to(message, f"✅ ₹{abs(amount)} {action} for @{target_username}")
             
             threading.Thread(target=auto_delete_message, args=(message.chat.id, reply_msg.message_id, 2)).start()
             threading.Thread(target=auto_delete_message, args=(message.chat.id, message.message_id, 2)).start()
             
             update_live_list(message.chat.id, message.chat.title)
-            
-        except ValueError:
-            pass
+
+# 👤 ADVANCED /balance /balanceinfo (Direct + Reply Support)
+@bot.message_handler(commands=['balance', 'balanceinfo'])
+def handle_balance_check(message):
+    target_username = None
+    parts = message.text.split()
+
+    # Case 1: Reply to someone's message
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target_username = message.reply_to_message.from_user.username
+
+    # Case 2: /balance @username
+    elif len(parts) >= 2:
+        target_username = parts[1].replace('@', '').strip()
+
+    # Case 3: Self balance check
+    else:
+        target_username = message.from_user.username
+
+    if not target_username:
+        msg = bot.reply_to(message, "❌ User has no telegram username set!")
+        threading.Thread(target=auto_delete_message, args=(message.chat.id, msg.message_id, 3)).start()
+        return
+
+    bal = get_user_balance(target_username)
+    disp_bal = int(bal) if bal.is_integer() else round(bal, 2)
+    
+    msg = bot.reply_to(message, f"👤 @{target_username}\n💰 Current Balance: <b>₹{disp_bal}</b>", parse_mode='HTML')
+    threading.Thread(target=auto_delete_message, args=(message.chat.id, msg.message_id, 5)).start()
+    threading.Thread(target=auto_delete_message, args=(message.chat.id, message.message_id, 2)).start()
 
 @bot.message_handler(commands=['commission'])
 def show_commission_report(message):
@@ -302,21 +353,6 @@ def callback_check_my_bal(call):
     disp_bal = int(bal) if bal.is_integer() else round(bal, 2)
     bot.answer_callback_query(call.id, f"👤 @{username}\n💰 Aapka Balance: ₹{disp_bal}", show_alert=True)
 
-@bot.message_handler(commands=['balanceinfo'])
-def cmd_balance_info(message):
-    username = message.from_user.username
-    if not username:
-        msg = bot.reply_to(message, "❌ Pehle apna Telegram Username set karein!")
-        threading.Thread(target=auto_delete_message, args=(message.chat.id, msg.message_id, 3)).start()
-        return
-        
-    bal = get_user_balance(username)
-    disp_bal = int(bal) if bal.is_integer() else round(bal, 2)
-    
-    msg = bot.reply_to(message, f"👤 @{username}\n💰 Aapka Balance: ₹{disp_bal}")
-    threading.Thread(target=auto_delete_message, args=(message.chat.id, msg.message_id, 5)).start()
-    threading.Thread(target=auto_delete_message, args=(message.chat.id, message.message_id, 2)).start()
-
 # 🎲 Table Auto Detection
 @bot.message_handler(func=lambda message: message.text and ('✅' in message.text or '✔️' in message.text or 'full' in message.text.lower()))
 def detect_table(message):
@@ -338,8 +374,8 @@ def detect_table(message):
                 amount = float(match.group(1))
                 
                 markup = InlineKeyboardMarkup()
-                btn1 = InlineKeyboardButton("#1 won", callback_data=f"w|1|{player1}|{player2}|{amount}|{message.message_id}|{last_line_text}")
-                btn2 = InlineKeyboardButton("#2 won", callback_data=f"w|2|{player2}|{player1}|{amount}|{message.message_id}|{last_line_text}")
+                btn1 = InlineKeyboardButton("#1 won", callback_data=f"w|1|{player1}|{player2}|{amount}|{last_line_text}")
+                btn2 = InlineKeyboardButton("#2 won", callback_data=f"w|2|{player2}|{player1}|{amount}|{last_line_text}")
                 markup.row(btn1, btn2)
                 
                 bot.reply_to(message, f"🎲 <b>Table Set!</b>\n\n(1). @{player1}\n(2). @{player2}\n💰 {last_line_text}", reply_markup=markup, parse_mode='HTML')
@@ -347,7 +383,7 @@ def detect_table(message):
             except ValueError:
                 pass
 
-# 🏆 Winner Click Handler
+# 🏆 Winner Click Handler (Leaves Admin Table Intact, Updates Balance & List)
 @bot.callback_query_handler(func=lambda call: call.data.startswith('w|'))
 def process_winner(call):
     bot.answer_callback_query(call.id, "Updating Result...")
@@ -362,8 +398,7 @@ def process_winner(call):
         winner = data_parts[2]
         loser = data_parts[3]
         full_amount = float(data_parts[4])
-        orig_admin_msg_id = int(data_parts[5])
-        last_line_text = data_parts[6]
+        last_line_text = data_parts[5]
         
         commission_cut = (full_amount * COMMISSION_RATE) / 100.0
         winner_net_amount = full_amount - commission_cut
@@ -381,13 +416,10 @@ def process_winner(call):
 
         result_msg_text = f"🎲 <i>Table Status</i>\n\n{p1_str}\n\n{p2_str}\n\n{last_line_text}"
         
-        try:
-            bot.delete_message(call.message.chat.id, orig_admin_msg_id)
-        except Exception:
-            pass
-
+        # Bot sends status message (Admin table remains safe & untouched)
         bot.send_message(call.message.chat.id, result_msg_text, parse_mode='HTML')
         
+        # Delete Bot's button prompt message
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
         except Exception:
@@ -405,6 +437,6 @@ if __name__ == "__main__":
     setup_db()
     threading.Thread(target=run_flask).start()
     
-    print("Bot fixed!")
+    print("Bot is fully upgraded with reply commands and persistent lists...")
     bot.polling(none_stop=True)
     
