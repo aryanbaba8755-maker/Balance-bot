@@ -7,46 +7,44 @@ import os
 from flask import Flask
 
 # ==========================================
-# ⚙️ CONFIGURATION (Yahan apni details daalein)
+# ⚙️ CONFIGURATION
 # ==========================================
-TOKEN = "8898313784:AAHjuGjYKluW9sfJtfNeRZbQShKT5Wt9X1s" # Apna Telegram Bot Token daalein
-OWNER_ID = 2107169286           # Apni Telegram User ID daalein (Admin access ke liye)
+TOKEN = "8898313784:AAH1oqsItqzvgrgVsbKvodjxei0l6uYbARY"
+OWNER_ID = 2107169286           # Bot Owner ki Telegram User ID
+COMMISSION_RATE = 5             # Fixed 5% Commission
 DB_NAME = 'group_balance.db'
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
 # ==========================================
-# 🌐 FLASK SERVER (Render Web Service ke liye)
+# 🌐 FLASK SERVER (Fast Deployment)
 # ==========================================
 @app.route('/')
 def home():
-    return "Bot is active and running!"
+    return "Bot is running ultra-fast!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
 # ==========================================
-# 🗄️ DATABASE FUNCTIONS (SQLite)
+# 🗄️ DATABASE FUNCTIONS
 # ==========================================
 def setup_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    # Users table
-    cursor.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, balance INTEGER DEFAULT 0)''')
-    # Chat data table (Pinned list ka message ID save karne ke liye)
+    cursor.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, balance REAL DEFAULT 0)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS chat_data (chat_id INTEGER PRIMARY KEY, pinned_msg_id INTEGER)''')
     conn.commit()
     conn.close()
 
 def update_balance(username, amount):
+    clean_username = username.replace('@', '').strip()
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    # Agar user naya hai toh pehle use 0 balance ke sath add karega
-    cursor.execute('INSERT OR IGNORE INTO users (username, balance) VALUES (?, 0)', (username,))
-    # Fir balance update karega
-    cursor.execute('UPDATE users SET balance = balance + ? WHERE username = ?', (amount, username))
+    cursor.execute('INSERT OR IGNORE INTO users (username, balance) VALUES (?, 0)', (clean_username,))
+    cursor.execute('UPDATE users SET balance = balance + ? WHERE username = ?', (amount, clean_username))
     conn.commit()
     conn.close()
 
@@ -74,21 +72,56 @@ def set_pinned_msg(chat_id, msg_id):
     conn.close()
 
 # ==========================================
-# 🛠️ UTILITY FUNCTIONS
+# 🛡️ SECURITY & VERIFICATION FUNCTIONS
 # ==========================================
-def is_admin(user_id):
-    return user_id == OWNER_ID
-
 def auto_delete_message(chat_id, message_id, delay=2):
-    """Background mein wait karke message delete karega"""
     time.sleep(delay)
     try:
         bot.delete_message(chat_id, message_id)
     except Exception:
         pass
 
+def check_group_eligibility(chat_id):
+    """Check karega ki Bot aur Owner dono Group me Admin hain ya nahi"""
+    try:
+        # 1. Check Bot Admin Status
+        bot_member = bot.get_chat_member(chat_id, bot.get_me().id)
+        if bot_member.status not in ['administrator', 'creator']:
+            return False
+        
+        # 2. Check Owner Admin Status
+        owner_member = bot.get_chat_member(chat_id, OWNER_ID)
+        if owner_member.status not in ['administrator', 'creator']:
+            return False
+
+        return True
+    except Exception:
+        return False
+
+def handle_ineligible_group(chat_id):
+    """Agar eligibility fail hoti hai toh List Delete kar dega"""
+    pinned_msg_id = get_pinned_msg(chat_id)
+    if pinned_msg_id:
+        try:
+            bot.delete_message(chat_id, pinned_msg_id)
+            set_pinned_msg(chat_id, None)
+        except Exception:
+            pass
+
+def is_chat_admin(chat_id, user_id):
+    """Check karega ki Command dene wala banda Group ka Admin hai ya nahi"""
+    if user_id == OWNER_ID:
+        return True
+    try:
+        member = bot.get_chat_member(chat_id, user_id)
+        return member.status in ['administrator', 'creator']
+    except Exception:
+        return False
+
+# ==========================================
+# 📜 LIST GENERATOR (Zero Links)
+# ==========================================
 def generate_live_list_text(chat_title):
-    """Group list ka design exactly aapke format jaisa"""
     records = get_all_balances()
     text = f"✨ Thanks everyone for playing with us! Your support means a lot ❤️\n"
     text += f"➖➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
@@ -100,9 +133,9 @@ def generate_live_list_text(chat_title):
     else:
         count = 1
         for i, (username, balance) in enumerate(records):
-            text += f"{count}. {username} = {balance}\n"
-            
-            # Har 3 users ke baad separator add karna (Last user ke baad nahi)
+            # Display balance upto 2 decimal places if fractional
+            disp_balance = int(balance) if balance.is_integer() else round(balance, 2)
+            text += f"{count}. {username} = {disp_balance}\n"
             if count % 3 == 0 and i != len(records) - 1:
                 text += "≕≔≕≔≕≔≕≔≕≔≕≔≕≔≕≔≕≔\n"
             count += 1
@@ -112,7 +145,10 @@ def generate_live_list_text(chat_title):
     return text
 
 def update_live_list(chat_id, chat_title):
-    """Pinned list ko update ya nayi list create karna"""
+    if not check_group_eligibility(chat_id):
+        handle_ineligible_group(chat_id)
+        return
+
     list_text = generate_live_list_text(chat_title)
     pinned_msg_id = get_pinned_msg(chat_id)
     
@@ -120,92 +156,150 @@ def update_live_list(chat_id, chat_title):
         try:
             bot.edit_message_text(list_text, chat_id, pinned_msg_id, parse_mode='Markdown')
         except Exception:
-            pass # Ignore agar text completely same hai
+            pass
     else:
-        # Nayi list bhejna aur pin karna
         msg = bot.send_message(chat_id, list_text, parse_mode='Markdown')
         try:
             bot.pin_chat_message(chat_id, msg.message_id)
             set_pinned_msg(chat_id, msg.message_id)
         except Exception:
-            bot.send_message(chat_id, "⚠️ List pin karne ke liye bot ko Admin banayein!")
+            pass
 
 # ==========================================
-# 🤖 BOT COMMANDS & HANDLERS
+# 🤖 EVENT HANDLERS & COMMANDS
 # ==========================================
 
-# Pehli baar list start karne ke liye owner yeh command use karega
+# 🚪 Group Join Security Guard (Owner Only Addition)
+@bot.message_handler(content_types=['new_chat_members'])
+def on_join(message):
+    for member in message.new_chat_members:
+        if member.id == bot.get_me().id:
+            # Check kisne add kiya
+            adder_id = message.from_user.id
+            if adder_id != OWNER_ID:
+                # Owner ke alawa kisi aur ne add kiya toh LEFT!
+                bot.leave_chat(message.chat.id)
+                return
+
+# 1️⃣ Start List Command
 @bot.message_handler(commands=['start_list'])
 def manual_list_trigger(message):
-    if not is_admin(message.from_user.id):
+    if not check_group_eligibility(message.chat.id):
+        handle_ineligible_group(message.chat.id)
         return
+        
+    if not is_chat_admin(message.chat.id, message.from_user.id):
+        return
+
     update_live_list(message.chat.id, message.chat.title)
-    bot.delete_message(message.chat.id, message.message_id) # Command delete 
-   # 1️⃣ Auto Table Detection (Space aur @ Auto Clean ke saath)
-@bot.message_handler(func=lambda message: True)
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+
+# 2️⃣ Manual /add aur /minus Commands
+@bot.message_handler(commands=['add', 'minus'])
+def handle_add_minus(message):
+    if not check_group_eligibility(message.chat.id):
+        handle_ineligible_group(message.chat.id)
+        return
+
+    if not is_chat_admin(message.chat.id, message.from_user.id):
+        return
+
+    parts = message.text.split()
+    if len(parts) >= 3:
+        try:
+            amount = float(parts[1])
+            username = parts[2]
+            
+            if message.text.startswith('/minus'):
+                amount = -amount
+            
+            update_balance(username, amount)
+            action = "added" if amount > 0 else "deducted"
+            
+            reply_msg = bot.reply_to(message, f"✅ {abs(amount)} {action} for @{username.replace('@', '')}")
+            
+            threading.Thread(target=auto_delete_message, args=(message.chat.id, reply_msg.message_id, 2)).start()
+            threading.Thread(target=auto_delete_message, args=(message.chat.id, message.message_id, 2)).start()
+            
+            update_live_list(message.chat.id, message.chat.title)
+            
+        except ValueError:
+            pass
+
+# 3️⃣ AUTO TABLE DETECTION (5% Commission Logic)
+@bot.message_handler(func=lambda message: message.text and ('✅' in message.text or '✔️' in message.text))
 def detect_table(message):
+    if not check_group_eligibility(message.chat.id):
+        handle_ineligible_group(message.chat.id)
+        return
+
+    if not is_chat_admin(message.chat.id, message.from_user.id):
+        return
+
     text = message.text.strip()
-    lines = [line.strip() for line in text.split('\n') if line.strip()] # Blank lines hata dega
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
     
-    # Check karega ki kam se kam 3 lines hon aur aakhri line me ✔️ ho
-    if len(lines) >= 3 and '✔️' in lines[-1]:
-        # '@' symbol hata kar clean name nikalna
+    if len(lines) >= 3:
         player1 = lines[0].replace('@', '').strip()
         player2 = lines[1].replace('@', '').strip()
         
         try:
-            # Amounts se ✔️ hata kar number nikalna
-            amount_str = lines[-1].replace('✔️', '').replace('full', '').strip()
-            amount = int(amount_str)
+            amount_str = lines[-1].replace('✅', '').replace('✔️', '').replace('full', '').strip()
+            amount = float(amount_str)
             
-            # Clickable Buttons (Short data format: win_player1_player2_amount)
             markup = InlineKeyboardMarkup()
-            btn1 = InlineKeyboardButton("1 Won", callback_data=f"w_{player1}_{player2}_{amount}")
-            btn2 = InlineKeyboardButton("2 Won", callback_data=f"w_{player2}_{player1}_{amount}")
+            btn1 = InlineKeyboardButton("#1 won", callback_data=f"w_{player1}_{player2}_{amount}")
+            btn2 = InlineKeyboardButton("#2 won", callback_data=f"w_{player2}_{player1}_{amount}")
             markup.row(btn1, btn2)
             
-            bot.reply_to(message, f"🎲 **Table Set!**\n1. {player1}\n2. {player2}\n💰 Amount: {amount}", reply_markup=markup, parse_mode='Markdown')
+            bot.reply_to(message, f"🎲 **Table Set!**\n\n1. @{player1}\n2. @{player2}\n💰 Amount: {amount}", reply_markup=markup, parse_mode='Markdown')
             
         except ValueError:
-            pass # Agar amount sahi number nahi hai toh ignore karega
+            pass
 
-# 2️⃣ Winner Selection & Balance Update
+# 4️⃣ WINNER CLICK HANDLER (With 5% Cut Math)
 @bot.callback_query_handler(func=lambda call: call.data.startswith('w_'))
 def process_winner(call):
-    # Security: Sirf Owner/Admin result set kar sakein
-    if not is_admin(call.from_user.id):
-        bot.answer_callback_query(call.id, "❌ Sirf Admins result set kar sakte hain!", show_alert=True)
+    if not check_group_eligibility(call.message.chat.id):
+        handle_ineligible_group(call.message.chat.id)
+        return
+
+    if not is_chat_admin(call.message.chat.id, call.from_user.id):
+        bot.answer_callback_query(call.id, "❌ Sirf Group Admins result set kar sakte hain!", show_alert=True)
         return
 
     data_parts = call.data.split('_')
     winner = data_parts[1]
     loser = data_parts[2]
-    amount = int(data_parts[3])
+    full_amount = float(data_parts[3])
     
-    # Balance update
-    update_balance(winner, amount)
-    update_balance(loser, -amount)
+    # 💥 5% Commission Cut Calculation
+    commission_cut = (full_amount * COMMISSION_RATE) / 100
+    winner_net_amount = full_amount - commission_cut
     
-    # Message par result update karna
-    bot.edit_message_text(f"🏆 **Table Result**\n\n1. {winner} ✔️✔️\n2. {loser}\n💰 Amount: {amount}", call.message.chat.id, call.message.message_id, parse_mode='Markdown')
+    # Update Balances: Winner gets (Amount - 5%), Loser loses Full Amount
+    update_balance(winner, winner_net_amount)
+    update_balance(loser, -full_amount)
     
-    # Result msg ko 2 second me delete karna
+    bot.edit_message_text(f"🏆 **Table Result**\n\n1. @{winner} ✔️✔️\n2. @{loser}\n💰 Amount: {full_amount}\n📉 (5% Cut: {commission_cut})", call.message.chat.id, call.message.message_id, parse_mode='Markdown')
+    
     threading.Thread(target=auto_delete_message, args=(call.message.chat.id, call.message.message_id, 2)).start()
     
-    # Live List ko update karna
+    # Live List Edit Update
     update_live_list(call.message.chat.id, call.message.chat.title)
     
-    bot.answer_callback_query(call.id, f"✅ Updated: {winner} +{amount} | {loser} -{amount}")
-    
-    # Admin ko choti notification dena (Screen ke upar)
-    bot.answer_callback_query(call.id, f"✅ Balance Updated: {winner} won {amount}!")
+    bot.answer_callback_query(call.id, f"✅ Updated! {winner} won +{winner_net_amount} (5% cut)")
 
 # ==========================================
 # 🚀 MAIN RUNNER
 # ==========================================
 if __name__ == "__main__":
-    setup_db() # Database tables banayega
-    threading.Thread(target=run_flask).start() # Flask server start karega (Port error theek karne ke liye)
+    setup_db()
+    threading.Thread(target=run_flask).start()
     
-    print("Bot is successfully running...")
+    print("Bot running with strict rules & 5% commission cut...")
     bot.polling(none_stop=True)
+            
