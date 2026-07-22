@@ -4,14 +4,16 @@ import sqlite3
 import threading
 import time
 import os
+import re
+from datetime import datetime, timedelta
 from flask import Flask
 
 # ==========================================
 # ⚙️ CONFIGURATION
 # ==========================================
 TOKEN = "8898313784:AAH1oqsItqzvgrgVsbKvodjxei0l6uYbARY"
-OWNER_ID = 2107169286           # Bot Owner ki Telegram User ID
-COMMISSION_RATE = 5             # Fixed 5% Commission
+OWNER_ID = 2107169286           
+COMMISSION_RATE = 5.0             # Exact 5% Commission
 DB_NAME = 'group_balance.db'
 
 bot = telebot.TeleBot(TOKEN)
@@ -22,7 +24,7 @@ app = Flask(__name__)
 # ==========================================
 @app.route('/')
 def home():
-    return "Bot is running ultra-fast!"
+    return "Bot is running perfectly!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -36,25 +38,91 @@ def setup_db():
     cursor = conn.cursor()
     cursor.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, balance REAL DEFAULT 0)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS chat_data (chat_id INTEGER PRIMARY KEY, pinned_msg_id INTEGER)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS commissions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        chat_id INTEGER,
+                        amount REAL,
+                        date_str TEXT,
+                        timestamp REAL
+                    )''')
     conn.commit()
     conn.close()
 
 def update_balance(username, amount):
-    clean_username = username.replace('@', '').strip()
+    clean_username = username.replace('@', '').strip().lower()
+    if not clean_username:
+        return
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute('INSERT OR IGNORE INTO users (username, balance) VALUES (?, 0)', (clean_username,))
-    cursor.execute('UPDATE users SET balance = balance + ? WHERE username = ?', (amount, clean_username))
+    
+    cursor.execute('SELECT balance FROM users WHERE LOWER(username) = ?', (clean_username,))
+    row = cursor.fetchone()
+    
+    if row is None:
+        cursor.execute('INSERT INTO users (username, balance) VALUES (?, ?)', (clean_username, float(amount)))
+    else:
+        new_bal = row[0] + float(amount)
+        cursor.execute('UPDATE users SET balance = ? WHERE LOWER(username) = ?', (new_bal, clean_username))
+        
     conn.commit()
     conn.close()
+
+def get_user_balance(username):
+    clean_username = username.replace('@', '').strip().lower()
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('SELECT balance FROM users WHERE LOWER(username) = ?', (clean_username,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else 0.0
 
 def get_all_balances():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute('SELECT username, balance FROM users ORDER BY username COLLATE NOCASE ASC')
+    cursor.execute('SELECT username, balance FROM users WHERE balance != 0 ORDER BY username COLLATE NOCASE ASC')
     records = cursor.fetchall()
     conn.close()
     return records
+
+def record_commission(chat_id, comm_amount):
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('INSERT INTO commissions (chat_id, amount, date_str, timestamp) VALUES (?, ?, ?, ?)',
+                   (chat_id, float(comm_amount), today_str, time.time()))
+    conn.commit()
+    conn.close()
+
+def get_7_days_commission_report(chat_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    report_lines = []
+    total_7_days = 0.0
+    today = datetime.now()
+    
+    for i in range(7):
+        date_obj = today - timedelta(days=i)
+        date_str = date_obj.strftime('%Y-%m-%d')
+        
+        cursor.execute('SELECT SUM(amount), COUNT(id) FROM commissions WHERE chat_id = ? AND date_str = ?', (chat_id, date_str))
+        row = cursor.fetchone()
+        
+        comm_sum = row[0] if row[0] else 0.0
+        table_count = row[1] if row[1] else 0
+        total_7_days += comm_sum
+        
+        disp_comm = int(comm_sum) if comm_sum.is_integer() else round(comm_sum, 2)
+        
+        if i == 0:
+            report_lines.append(f"<b>Today ({date_str})</b>: ₹{disp_comm} ({table_count} Tables)")
+        else:
+            date_fmt = date_obj.strftime('%d %b')
+            report_lines.append(f"<b>{date_fmt}</b>: ₹{disp_comm} ({table_count} Tables)")
+            
+    conn.close()
+    disp_total = int(total_7_days) if total_7_days.is_integer() else round(total_7_days, 2)
+    return report_lines, disp_total
 
 def get_pinned_msg(chat_id):
     conn = sqlite3.connect(DB_NAME)
@@ -72,7 +140,7 @@ def set_pinned_msg(chat_id, msg_id):
     conn.close()
 
 # ==========================================
-# 🛡️ SECURITY & VERIFICATION FUNCTIONS
+# 🛡️ SECURITY & VERIFICATION
 # ==========================================
 def auto_delete_message(chat_id, message_id, delay=2):
     time.sleep(delay)
@@ -82,34 +150,18 @@ def auto_delete_message(chat_id, message_id, delay=2):
         pass
 
 def check_group_eligibility(chat_id):
-    """Check karega ki Bot aur Owner dono Group me Admin hain ya nahi"""
     try:
-        # 1. Check Bot Admin Status
         bot_member = bot.get_chat_member(chat_id, bot.get_me().id)
         if bot_member.status not in ['administrator', 'creator']:
             return False
-        
-        # 2. Check Owner Admin Status
         owner_member = bot.get_chat_member(chat_id, OWNER_ID)
         if owner_member.status not in ['administrator', 'creator']:
             return False
-
         return True
     except Exception:
         return False
 
-def handle_ineligible_group(chat_id):
-    """Agar eligibility fail hoti hai toh List Delete kar dega"""
-    pinned_msg_id = get_pinned_msg(chat_id)
-    if pinned_msg_id:
-        try:
-            bot.delete_message(chat_id, pinned_msg_id)
-            set_pinned_msg(chat_id, None)
-        except Exception:
-            pass
-
 def is_chat_admin(chat_id, user_id):
-    """Check karega ki Command dene wala banda Group ka Admin hai ya nahi"""
     if user_id == OWNER_ID:
         return True
     try:
@@ -119,7 +171,7 @@ def is_chat_admin(chat_id, user_id):
         return False
 
 # ==========================================
-# 📜 LIST GENERATOR (Zero Links)
+# 📜 LIST GENERATOR
 # ==========================================
 def generate_live_list_text(chat_title):
     records = get_all_balances()
@@ -133,7 +185,6 @@ def generate_live_list_text(chat_title):
     else:
         count = 1
         for i, (username, balance) in enumerate(records):
-            # Display balance upto 2 decimal places if fractional
             disp_balance = int(balance) if balance.is_integer() else round(balance, 2)
             text += f"{count}. {username} = {disp_balance}\n"
             if count % 3 == 0 and i != len(records) - 1:
@@ -146,19 +197,21 @@ def generate_live_list_text(chat_title):
 
 def update_live_list(chat_id, chat_title):
     if not check_group_eligibility(chat_id):
-        handle_ineligible_group(chat_id)
         return
 
     list_text = generate_live_list_text(chat_title)
     pinned_msg_id = get_pinned_msg(chat_id)
     
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("ℹ️ Check My Balance (/balanceinfo)", callback_data="check_my_bal"))
+
     if pinned_msg_id:
         try:
-            bot.edit_message_text(list_text, chat_id, pinned_msg_id, parse_mode='Markdown')
+            bot.edit_message_text(list_text, chat_id, pinned_msg_id, reply_markup=markup, parse_mode='Markdown')
         except Exception:
             pass
     else:
-        msg = bot.send_message(chat_id, list_text, parse_mode='Markdown')
+        msg = bot.send_message(chat_id, list_text, reply_markup=markup, parse_mode='Markdown')
         try:
             bot.pin_chat_message(chat_id, msg.message_id)
             set_pinned_msg(chat_id, msg.message_id)
@@ -166,60 +219,41 @@ def update_live_list(chat_id, chat_title):
             pass
 
 # ==========================================
-# 🤖 EVENT HANDLERS & COMMANDS
+# 🤖 COMMANDS & HANDLERS
 # ==========================================
 
-# 🚪 Group Join Security Guard (Owner Only Addition)
 @bot.message_handler(content_types=['new_chat_members'])
 def on_join(message):
     for member in message.new_chat_members:
         if member.id == bot.get_me().id:
-            # Check kisne add kiya
-            adder_id = message.from_user.id
-            if adder_id != OWNER_ID:
-                # Owner ke alawa kisi aur ne add kiya toh LEFT!
+            if message.from_user.id != OWNER_ID:
                 bot.leave_chat(message.chat.id)
                 return
 
-# 1️⃣ Start List Command
 @bot.message_handler(commands=['start_list'])
 def manual_list_trigger(message):
-    if not check_group_eligibility(message.chat.id):
-        handle_ineligible_group(message.chat.id)
+    if not check_group_eligibility(message.chat.id) or not is_chat_admin(message.chat.id, message.from_user.id):
         return
-        
-    if not is_chat_admin(message.chat.id, message.from_user.id):
-        return
-
     update_live_list(message.chat.id, message.chat.title)
-    try:
-        bot.delete_message(message.chat.id, message.message_id)
-    except Exception:
-        pass
+    threading.Thread(target=auto_delete_message, args=(message.chat.id, message.message_id, 1)).start()
 
-# 2️⃣ Manual /add aur /minus Commands
 @bot.message_handler(commands=['add', 'minus'])
 def handle_add_minus(message):
-    if not check_group_eligibility(message.chat.id):
-        handle_ineligible_group(message.chat.id)
-        return
-
-    if not is_chat_admin(message.chat.id, message.from_user.id):
+    if not check_group_eligibility(message.chat.id) or not is_chat_admin(message.chat.id, message.from_user.id):
         return
 
     parts = message.text.split()
     if len(parts) >= 3:
         try:
             amount = float(parts[1])
-            username = parts[2]
+            username = parts[2].replace('@', '').strip()
             
             if message.text.startswith('/minus'):
                 amount = -amount
             
             update_balance(username, amount)
             action = "added" if amount > 0 else "deducted"
-            
-            reply_msg = bot.reply_to(message, f"✅ {abs(amount)} {action} for @{username.replace('@', '')}")
+            reply_msg = bot.reply_to(message, f"✅ ₹{abs(amount)} {action} for @{username}")
             
             threading.Thread(target=auto_delete_message, args=(message.chat.id, reply_msg.message_id, 2)).start()
             threading.Thread(target=auto_delete_message, args=(message.chat.id, message.message_id, 2)).start()
@@ -229,14 +263,53 @@ def handle_add_minus(message):
         except ValueError:
             pass
 
-# 3️⃣ AUTO TABLE DETECTION (5% Commission Logic)
-@bot.message_handler(func=lambda message: message.text and ('✅' in message.text or '✔️' in message.text))
-def detect_table(message):
-    if not check_group_eligibility(message.chat.id):
-        handle_ineligible_group(message.chat.id)
+@bot.message_handler(commands=['commission'])
+def show_commission_report(message):
+    if not check_group_eligibility(message.chat.id) or not is_chat_admin(message.chat.id, message.from_user.id):
         return
 
-    if not is_chat_admin(message.chat.id, message.from_user.id):
+    daily_lines, total_7_days = get_7_days_commission_report(message.chat.id)
+    
+    report_text = "📊 <b>7-DAYS COMMISSION REPORT</b> 📊\n"
+    report_text += "➖➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
+    
+    for line in daily_lines:
+        report_text += f"🔹 {line}\n"
+        
+    report_text += "\n➖➖➖➖➖➖➖➖➖➖➖➖➖\n"
+    report_text += f"💰 <b>This Week Total Commission: ₹{total_7_days}</b>"
+    
+    bot.send_message(message.chat.id, report_text, parse_mode='HTML')
+
+@bot.message_handler(commands=['balanceinfo'])
+def cmd_balance_info(message):
+    username = message.from_user.username
+    if not username:
+        msg = bot.reply_to(message, "❌ Please set a Telegram username first!")
+        threading.Thread(target=auto_delete_message, args=(message.chat.id, msg.message_id, 3)).start()
+        return
+        
+    bal = get_user_balance(username)
+    disp_bal = int(bal) if bal.is_integer() else round(bal, 2)
+    
+    msg = bot.reply_to(message, f"👤 @{username}\n💰 Your Current Balance: <b>₹{disp_bal}</b>", parse_mode='HTML')
+    threading.Thread(target=auto_delete_message, args=(message.chat.id, msg.message_id, 5)).start()
+    threading.Thread(target=auto_delete_message, args=(message.chat.id, message.message_id, 2)).start()
+
+@bot.callback_query_handler(func=lambda call: call.data == "check_my_bal")
+def callback_check_my_bal(call):
+    username = call.from_user.username
+    if not username:
+        bot.answer_callback_query(call.id, "❌ Please set a Telegram username first to check balance!", show_alert=True)
+        return
+    bal = get_user_balance(username)
+    disp_bal = int(bal) if bal.is_integer() else round(bal, 2)
+    bot.answer_callback_query(call.id, f"👤 @{username}\n💰 Your Current Balance: ₹{disp_bal}", show_alert=True)
+
+# 5️⃣ AUTO TABLE DETECTION (Regex for extra words like full, hc, lcj)
+@bot.message_handler(func=lambda message: message.text and ('✅' in message.text or '✔️' in message.text or 'full' in message.text.lower()))
+def detect_table(message):
+    if not check_group_eligibility(message.chat.id) or not is_chat_admin(message.chat.id, message.from_user.id):
         return
 
     text = message.text.strip()
@@ -246,29 +319,28 @@ def detect_table(message):
         player1 = lines[0].replace('@', '').strip()
         player2 = lines[1].replace('@', '').strip()
         
-        try:
-            amount_str = lines[-1].replace('✅', '').replace('✔️', '').replace('full', '').strip()
-            amount = float(amount_str)
-            
-            markup = InlineKeyboardMarkup()
-            btn1 = InlineKeyboardButton("#1 won", callback_data=f"w_{player1}_{player2}_{amount}")
-            btn2 = InlineKeyboardButton("#2 won", callback_data=f"w_{player2}_{player1}_{amount}")
-            markup.row(btn1, btn2)
-            
-            bot.reply_to(message, f"🎲 **Table Set!**\n\n1. @{player1}\n2. @{player2}\n💰 Amount: {amount}", reply_markup=markup, parse_mode='Markdown')
-            
-        except ValueError:
-            pass
+        last_line = lines[-1]
+        match = re.search(r'(\d+)', last_line)
+        
+        if match:
+            try:
+                amount = float(match.group(1))
+                
+                markup = InlineKeyboardMarkup()
+                btn1 = InlineKeyboardButton("#1 won", callback_data=f"w_{player1}_{player2}_{amount}")
+                btn2 = InlineKeyboardButton("#2 won", callback_data=f"w_{player2}_{player1}_{amount}")
+                markup.row(btn1, btn2)
+                
+                bot.reply_to(message, f"🎲 <b>Table Set!</b>\n\n1. @{player1}\n2. @{player2}\n💰 Amount: ₹{amount}", reply_markup=markup, parse_mode='HTML')
+                
+            except ValueError:
+                pass
 
-# 4️⃣ WINNER CLICK HANDLER (With 5% Cut Math)
+# 6️⃣ WINNER CLICK HANDLER
 @bot.callback_query_handler(func=lambda call: call.data.startswith('w_'))
 def process_winner(call):
-    if not check_group_eligibility(call.message.chat.id):
-        handle_ineligible_group(call.message.chat.id)
-        return
-
-    if not is_chat_admin(call.message.chat.id, call.from_user.id):
-        bot.answer_callback_query(call.id, "❌ Sirf Group Admins result set kar sakte hain!", show_alert=True)
+    if not check_group_eligibility(call.message.chat.id) or not is_chat_admin(call.message.chat.id, call.from_user.id):
+        bot.answer_callback_query(call.id, "❌ Only Group Admins can set result!", show_alert=True)
         return
 
     data_parts = call.data.split('_')
@@ -276,22 +348,21 @@ def process_winner(call):
     loser = data_parts[2]
     full_amount = float(data_parts[3])
     
-    # 💥 5% Commission Cut Calculation
-    commission_cut = (full_amount * COMMISSION_RATE) / 100
+    commission_cut = (full_amount * COMMISSION_RATE) / 100.0
     winner_net_amount = full_amount - commission_cut
     
-    # Update Balances: Winner gets (Amount - 5%), Loser loses Full Amount
     update_balance(winner, winner_net_amount)
     update_balance(loser, -full_amount)
+    record_commission(call.message.chat.id, commission_cut)
     
-    bot.edit_message_text(f"🏆 **Table Result**\n\n1. @{winner} ✔️✔️\n2. @{loser}\n💰 Amount: {full_amount}\n📉 (5% Cut: {commission_cut})", call.message.chat.id, call.message.message_id, parse_mode='Markdown')
+    disp_winner_amt = int(winner_net_amount) if winner_net_amount.is_integer() else round(winner_net_amount, 2)
+    disp_comm = int(commission_cut) if commission_cut.is_integer() else round(commission_cut, 2)
     
-    threading.Thread(target=auto_delete_message, args=(call.message.chat.id, call.message.message_id, 2)).start()
+    bot.edit_message_text(f"🏆 <b>Table Result</b>\n\n1. @{winner} ✔️✔️ (+₹{disp_winner_amt})\n2. @{loser} (-₹{full_amount})\n💰 Table: ₹{full_amount} | 📉 5% Comm: ₹{disp_comm}", 
+                          call.message.chat.id, call.message.message_id, parse_mode='HTML')
     
-    # Live List Edit Update
     update_live_list(call.message.chat.id, call.message.chat.title)
-    
-    bot.answer_callback_query(call.id, f"✅ Updated! {winner} won +{winner_net_amount} (5% cut)")
+    bot.answer_callback_query(call.id, f"✅ Updated! {winner} won +₹{disp_winner_amt} | Comm: ₹{disp_comm}")
 
 # ==========================================
 # 🚀 MAIN RUNNER
@@ -300,6 +371,5 @@ if __name__ == "__main__":
     setup_db()
     threading.Thread(target=run_flask).start()
     
-    print("Bot running with strict rules & 5% commission cut...")
+    print("Bot updated with regex detection...")
     bot.polling(none_stop=True)
-            
