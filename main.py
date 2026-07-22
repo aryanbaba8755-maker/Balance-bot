@@ -140,39 +140,41 @@ def manual_list_trigger(message):
     if not is_admin(message.from_user.id):
         return
     update_live_list(message.chat.id, message.chat.title)
-    bot.delete_message(message.chat.id, message.message_id) # Command delete kar dega
-
-# 1️⃣ Auto Table Detection (Jab bhi koi ✔️ lagayega)
+    bot.delete_message(message.chat.id, message.message_id) # Command delete 
+   # 1️⃣ Auto Table Detection (Space aur @ Auto Clean ke saath)
 @bot.message_handler(func=lambda message: True)
 def detect_table(message):
     text = message.text.strip()
-    lines = text.split('\n')
+    lines = [line.strip() for line in text.split('\n') if line.strip()] # Blank lines hata dega
     
-    # 3 lines check karega aur aakhri line me ✔️ dhundega
-    if len(lines) >= 3 and '✔️' in lines[2]:
-        player1 = lines[0].strip()
-        player2 = lines[1].strip()
+    # Check karega ki kam se kam 3 lines hon aur aakhri line me ✔️ ho
+    if len(lines) >= 3 and '✔️' in lines[-1]:
+        # '@' symbol hata kar clean name nikalna
+        player1 = lines[0].replace('@', '').strip()
+        player2 = lines[1].replace('@', '').strip()
         
         try:
-            amount = int(lines[2].replace('✔️', '').strip())
+            # Amounts se ✔️ hata kar number nikalna
+            amount_str = lines[-1].replace('✔️', '').replace('full', '').strip()
+            amount = int(amount_str)
             
-            # Clickable Buttons (Data size chota rakhne ke liye 'w' use kiya hai)
+            # Clickable Buttons (Short data format: win_player1_player2_amount)
             markup = InlineKeyboardMarkup()
             btn1 = InlineKeyboardButton("1 Won", callback_data=f"w_{player1}_{player2}_{amount}")
             btn2 = InlineKeyboardButton("2 Won", callback_data=f"w_{player2}_{player1}_{amount}")
             markup.row(btn1, btn2)
             
-            bot.reply_to(message, f"🎲 **Table Set!**\n1. {player1}\n2. {player2}\n💰 {amount}", reply_markup=markup, parse_mode='Markdown')
+            bot.reply_to(message, f"🎲 **Table Set!**\n1. {player1}\n2. {player2}\n💰 Amount: {amount}", reply_markup=markup, parse_mode='Markdown')
             
         except ValueError:
-            pass
+            pass # Agar amount sahi number nahi hai toh ignore karega
 
 # 2️⃣ Winner Selection & Balance Update
 @bot.callback_query_handler(func=lambda call: call.data.startswith('w_'))
 def process_winner(call):
-    # Sirf admin hi button daba sakta hai
+    # Security: Sirf Owner/Admin result set kar sakein
     if not is_admin(call.from_user.id):
-        bot.answer_callback_query(call.id, "❌ Only Admins can set results!", show_alert=True)
+        bot.answer_callback_query(call.id, "❌ Sirf Admins result set kar sakte hain!", show_alert=True)
         return
 
     data_parts = call.data.split('_')
@@ -180,18 +182,20 @@ def process_winner(call):
     loser = data_parts[2]
     amount = int(data_parts[3])
     
-    # Database me balance update karna (Plus aur Minus)
+    # Balance update
     update_balance(winner, amount)
     update_balance(loser, -amount)
     
-    # Message ko edit karke tick laga dena
-    bot.edit_message_text(f"🏆 **Result Updated!**\nWinner: {winner} ✔️\nLoser: {loser}", call.message.chat.id, call.message.message_id, parse_mode='Markdown')
+    # Message par result update karna
+    bot.edit_message_text(f"🏆 **Table Result**\n\n1. {winner} ✔️✔️\n2. {loser}\n💰 Amount: {amount}", call.message.chat.id, call.message.message_id, parse_mode='Markdown')
     
-    # Result wale message ko 2 second me delete kar dena
+    # Result msg ko 2 second me delete karna
     threading.Thread(target=auto_delete_message, args=(call.message.chat.id, call.message.message_id, 2)).start()
     
-    # Pinned List ko update karna
+    # Live List ko update karna
     update_live_list(call.message.chat.id, call.message.chat.title)
+    
+    bot.answer_callback_query(call.id, f"✅ Updated: {winner} +{amount} | {loser} -{amount}")
     
     # Admin ko choti notification dena (Screen ke upar)
     bot.answer_callback_query(call.id, f"✅ Balance Updated: {winner} won {amount}!")
