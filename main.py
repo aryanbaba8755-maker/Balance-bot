@@ -12,14 +12,13 @@ from flask import Flask
 # ⚙️ CONFIGURATION
 # ==========================================
 TOKEN = "8898313784:AAH1oqsItqzvgrgVsbKvodjxei0l6uYbARY"
-OWNER_ID = 2107169286         
+OWNER_ID = 2107169286       
 COMMISSION_RATE = 5.0             # Exact 5% Commission
 DB_NAME = 'group_balance.db'
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-# User Notification Status Dictionary
 user_notifications = {}
 
 # ==========================================
@@ -211,7 +210,6 @@ def generate_live_list_text(chat_title):
     text += "\n⏺️ Check Full Records..."
     return text
 
-# Photo 1 Exact Buttons Layout Generator
 def get_list_buttons():
     markup = InlineKeyboardMarkup()
     btn1 = InlineKeyboardButton("Check Your Balance 💵", callback_data="check_my_bal")
@@ -247,7 +245,6 @@ def update_live_list(chat_id, chat_title):
 # 🤖 COMMANDS & HANDLERS
 # ==========================================
 
-# Photo 2 Exact Layout Private Start Command Handler
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     if message.chat.type == 'private':
@@ -377,9 +374,6 @@ def show_commission_report(message):
     
     bot.send_message(message.chat.id, report_text, parse_mode='HTML')
 
-# ==========================================
-# 🔘 BUTTON CALLBACK HANDLERS
-# ==========================================
 @bot.callback_query_handler(func=lambda call: call.data in ["check_my_bal", "toggle_notif", "refresh_list", "toggle_start_notif", "refresh_start_info"])
 def handle_button_callbacks(call):
     username = call.from_user.username
@@ -410,7 +404,7 @@ def handle_button_callbacks(call):
     elif call.data == "refresh_start_info":
         bot.answer_callback_query(call.id, "ℹ️ Info Refreshed!")
 
-# 🎲 TABLE DETECTION (Clickable Profiles Exact Like Photo 3)
+# 🎲 TABLE DETECTION
 @bot.message_handler(func=lambda message: message.text and ('✅' in message.text or '✔️' in message.text))
 def detect_table(message):
     if not is_admin_or_owner(message.chat.id, message.from_user.id):
@@ -430,7 +424,6 @@ def detect_table(message):
             try:
                 amount = float(match.group(1))
                 
-                # Profile Links for both players
                 p1_link = make_profile_link(player1)
                 p2_link = make_profile_link(player2)
                 
@@ -441,7 +434,6 @@ def detect_table(message):
                 
                 bot.send_message(message.chat.id, f"🎲 <b>Table Set!</b>\n\n(1). {p1_link}\n(2). {p2_link}\n💰 {last_line_text}", reply_markup=markup, parse_mode='HTML', disable_web_page_preview=True)
                 
-                # Delete Admin's original table message
                 try:
                     bot.delete_message(message.chat.id, message.message_id)
                 except Exception:
@@ -450,7 +442,7 @@ def detect_table(message):
             except ValueError:
                 pass
 
-# 🏆 WINNER CLICK HANDLER (Clickable Profiles Exact Like Photo 3)
+# 🏆 WINNER CLICK HANDLER
 @bot.callback_query_handler(func=lambda call: call.data.startswith('w|'))
 def process_winner(call):
     bot.answer_callback_query(call.id, "Updating Result...")
@@ -477,4 +469,16 @@ def process_winner(call):
         winner_link = make_profile_link(winner)
         loser_link = make_profile_link(loser)
 
-        # Photo 3 exact Table Status formatting with click
+        if won_choice == '1':
+            p1_str = f"(1). {winner_link} ✔️✔️"
+            p2_str = f"(2). {loser_link}"
+        else:
+            p1_str = f"(1). {loser_link}"
+            p2_str = f"(2). {winner_link} ✔️✔️"
+
+        result_msg_text = f"🎲 <i>Table Status</i>\n\n{p1_str}\n\n{p2_str}\n\n{last_line_text}"
+        
+        bot.send_message(call.message.chat.id, result_msg_text, parse_mode='HTML', disable_web_page_preview=True)
+        
+        try:
+            bot.delete_messag
