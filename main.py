@@ -12,7 +12,7 @@ from flask import Flask
 # ⚙️ CONFIGURATION
 # ==========================================
 TOKEN = "8898313784:AAH1oqsItqzvgrgVsbKvodjxei0l6uYbARY"
-OWNER_ID = 2107169286       
+OWNER_ID = 2107169286           
 COMMISSION_RATE = 5.0             # Exact 5% Commission
 DB_NAME = 'group_balance.db'
 
