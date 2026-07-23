@@ -12,19 +12,22 @@ from flask import Flask
 # ⚙️ CONFIGURATION
 # ==========================================
 TOKEN = "8898313784:AAH1oqsItqzvgrgVsbKvodjxei0l6uYbARY"
-OWNER_ID = 2107169286           
+OWNER_ID = 2107169286         
 COMMISSION_RATE = 5.0             # Exact 5% Commission
 DB_NAME = 'group_balance.db'
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
+# User Notification Status Dictionary
+user_notifications = {}
+
 # ==========================================
 # 🌐 FLASK SERVER
 # ==========================================
 @app.route('/')
 def home():
-    return "Bot is active!"
+    return "Bot is running ultra-smoothly!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -169,6 +172,10 @@ def is_admin_or_owner(chat_id, user_id):
     except Exception:
         return False
 
+def make_profile_link(username):
+    clean_name = str(username).replace('@', '').strip()
+    return f"<a href='https://t.me/{clean_name}'>{clean_name}</a>"
+
 # ==========================================
 # 📜 ALPHABETICAL A-Z LIST GENERATOR
 # ==========================================
@@ -196,11 +203,7 @@ def generate_live_list_text(chat_title):
         for key in sorted_keys:
             for username, balance, u_id in alphabet_groups[key]:
                 disp_balance = int(balance) if balance.is_integer() else round(balance, 2)
-                if u_id and u_id != 0:
-                    user_link = f"<a href='tg://user?id={u_id}'>{username}</a>"
-                else:
-                    user_link = f"<a href='https://t.me/{username}'>{username}</a>"
-                    
+                user_link = make_profile_link(username)
                 text += f"{count}. {user_link} = {disp_balance}\n"
                 count += 1
             text += "➖➖➖➖➖➖➖➖➖➖➖➖➖\n"
@@ -208,12 +211,23 @@ def generate_live_list_text(chat_title):
     text += "\n⏺️ Check Full Records..."
     return text
 
+# Photo 1 Exact Buttons Layout Generator
+def get_list_buttons():
+    markup = InlineKeyboardMarkup()
+    btn1 = InlineKeyboardButton("Check Your Balance 💵", callback_data="check_my_bal")
+    btn2 = InlineKeyboardButton("Switch Inline ↗️", switch_inline_query="")
+    btn3 = InlineKeyboardButton("Notification ⚙️", callback_data="toggle_notif")
+    btn4 = InlineKeyboardButton("🔄 Refresh", callback_data="refresh_list")
+    
+    markup.row(btn1)
+    markup.row(btn2, btn3)
+    markup.row(btn4)
+    return markup
+
 def update_live_list(chat_id, chat_title):
     list_text = generate_live_list_text(chat_title)
     pinned_msg_id = get_pinned_msg(chat_id)
-    
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("ℹ️ Check My Balance (/balanceinfo)", callback_data="check_my_bal"))
+    markup = get_list_buttons()
 
     if pinned_msg_id:
         try:
@@ -233,6 +247,39 @@ def update_live_list(chat_id, chat_title):
 # 🤖 COMMANDS & HANDLERS
 # ==========================================
 
+# Photo 2 Exact Layout Private Start Command Handler
+@bot.message_handler(commands=['start'])
+def handle_start(message):
+    if message.chat.type == 'private':
+        user_first_name = message.from_user.first_name or "User"
+        username = message.from_user.username or "None"
+        user_id = message.from_user.id
+        
+        bal = get_user_balance(username) if username != "None" else 0.0
+        disp_bal = int(bal) if bal.is_integer() else round(bal, 2)
+        notif_status = user_notifications.get(user_id, "Active")
+        
+        start_text = f"🗂️<b>{user_first_name}'s INFO:</b>\n\n"
+        start_text += f"💵 <b>Balance :</b> {disp_bal}\n"
+        start_text += f"📕 <b>Side Balance:</b> 0\n"
+        start_text += f"♎ <b>Custom Fee:</b> Inactive\n"
+        start_text += f"🗣️ <b>Chat ID:</b> {message.chat.id}\n"
+        start_text += f"🔔 <b>Notification:</b> {notif_status}\n\n"
+        start_text += f"📖 <b>Bot Version:</b> 2.8.70\n"
+        start_text += f"📖 <b>Demo Bot:</b> @crkt3bot\n"
+        start_text += f"🥷 <b>Bot Developer:</b> @molicoder"
+
+        markup = InlineKeyboardMarkup()
+        btn1 = InlineKeyboardButton("Switch Inline ↗️", switch_inline_query="")
+        btn2 = InlineKeyboardButton(f"🔔 Notification: {'OFF' if notif_status == 'Active' else 'ON'}", callback_data="toggle_start_notif")
+        btn3 = InlineKeyboardButton("🔄 Refresh", callback_data="refresh_start_info")
+        
+        markup.row(btn1)
+        markup.row(btn2)
+        markup.row(btn3)
+
+        bot.send_message(message.chat.id, start_text, reply_markup=markup, parse_mode='HTML')
+
 @bot.message_handler(content_types=['new_chat_members'])
 def on_join(message):
     for member in message.new_chat_members:
@@ -248,7 +295,6 @@ def manual_list_trigger(message):
     update_live_list(message.chat.id, message.chat.title)
     threading.Thread(target=auto_delete_message, args=(message.chat.id, message.message_id, 1)).start()
 
-# 💰 REAL-TIME /add & /minus HANDLER
 @bot.message_handler(commands=['add', 'minus'])
 def handle_add_minus(message):
     if not is_admin_or_owner(message.chat.id, message.from_user.id):
@@ -291,7 +337,6 @@ def handle_add_minus(message):
             
             update_live_list(message.chat.id, message.chat.title)
 
-# 👤 /balance /balanceinfo HANDLER
 @bot.message_handler(commands=['balance', 'balanceinfo'])
 def handle_balance_check(message):
     target_username = None
@@ -332,18 +377,40 @@ def show_commission_report(message):
     
     bot.send_message(message.chat.id, report_text, parse_mode='HTML')
 
-@bot.callback_query_handler(func=lambda call: call.data == "check_my_bal")
-def callback_check_my_bal(call):
+# ==========================================
+# 🔘 BUTTON CALLBACK HANDLERS
+# ==========================================
+@bot.callback_query_handler(func=lambda call: call.data in ["check_my_bal", "toggle_notif", "refresh_list", "toggle_start_notif", "refresh_start_info"])
+def handle_button_callbacks(call):
     username = call.from_user.username
-    if not username:
-        bot.answer_callback_query(call.id, "❌ Pehle apna Telegram Username set karein!", show_alert=True)
-        return
-    
-    bal = get_user_balance(username)
-    disp_bal = int(bal) if bal.is_integer() else round(bal, 2)
-    bot.answer_callback_query(call.id, f"👤 @{username}\n💰 Aapka Balance: ₹{disp_bal}", show_alert=True)
+    user_id = call.from_user.id
 
-# 🎲 TABLE DETECTION (Strict Tick Mark Check & Auto Delete Admin Table)
+    if call.data == "check_my_bal":
+        if not username:
+            bot.answer_callback_query(call.id, "❌ Pehle apna Telegram Username set karein!", show_alert=True)
+            return
+        bal = get_user_balance(username)
+        disp_bal = int(bal) if bal.is_integer() else round(bal, 2)
+        bot.answer_callback_query(call.id, f"👤 @{username}\n💰 Aapka Balance: ₹{disp_bal}", show_alert=True)
+
+    elif call.data == "refresh_list":
+        update_live_list(call.message.chat.id, call.message.chat.title)
+        bot.answer_callback_query(call.id, "✅ List Refreshed!")
+
+    elif call.data == "toggle_notif":
+        curr = user_notifications.get(user_id, "Active")
+        user_notifications[user_id] = "Inactive" if curr == "Active" else "Active"
+        bot.answer_callback_query(call.id, f"Notification Status: {user_notifications[user_id]}")
+
+    elif call.data == "toggle_start_notif":
+        curr = user_notifications.get(user_id, "Active")
+        user_notifications[user_id] = "Inactive" if curr == "Active" else "Active"
+        bot.answer_callback_query(call.id, f"Notifications turned {user_notifications[user_id]}")
+
+    elif call.data == "refresh_start_info":
+        bot.answer_callback_query(call.id, "ℹ️ Info Refreshed!")
+
+# 🎲 TABLE DETECTION (Clickable Profiles Exact Like Photo 3)
 @bot.message_handler(func=lambda message: message.text and ('✅' in message.text or '✔️' in message.text))
 def detect_table(message):
     if not is_admin_or_owner(message.chat.id, message.from_user.id):
@@ -357,21 +424,24 @@ def detect_table(message):
         player2 = lines[1].replace('@', '').strip()
         last_line_text = lines[-1]
         
-        # Match digits from last line containing tick mark (e.g., extracts 500 from 500✅ hc,lcj,tcj,bcj,full)
         match = re.search(r'(\d+)', last_line_text)
         
         if match:
             try:
                 amount = float(match.group(1))
                 
+                # Profile Links for both players
+                p1_link = make_profile_link(player1)
+                p2_link = make_profile_link(player2)
+                
                 markup = InlineKeyboardMarkup()
                 btn1 = InlineKeyboardButton("#1 won", callback_data=f"w|1|{player1}|{player2}|{amount}|{last_line_text}")
                 btn2 = InlineKeyboardButton("#2 won", callback_data=f"w|2|{player2}|{player1}|{amount}|{last_line_text}")
                 markup.row(btn1, btn2)
                 
-                bot.send_message(message.chat.id, f"🎲 <b>Table Set!</b>\n\n(1). @{player1}\n(2). @{player2}\n💰 {last_line_text}", reply_markup=markup, parse_mode='HTML')
+                bot.send_message(message.chat.id, f"🎲 <b>Table Set!</b>\n\n(1). {p1_link}\n(2). {p2_link}\n💰 {last_line_text}", reply_markup=markup, parse_mode='HTML', disable_web_page_preview=True)
                 
-                # Delete Admin's original table message immediately
+                # Delete Admin's original table message
                 try:
                     bot.delete_message(message.chat.id, message.message_id)
                 except Exception:
@@ -380,7 +450,7 @@ def detect_table(message):
             except ValueError:
                 pass
 
-# 🏆 WINNER CLICK HANDLER
+# 🏆 WINNER CLICK HANDLER (Clickable Profiles Exact Like Photo 3)
 @bot.callback_query_handler(func=lambda call: call.data.startswith('w|'))
 def process_winner(call):
     bot.answer_callback_query(call.id, "Updating Result...")
@@ -404,35 +474,7 @@ def process_winner(call):
         update_balance(loser, -full_amount)
         record_commission(call.message.chat.id, commission_cut)
         
-        if won_choice == '1':
-            p1_str = f"(1). {winner} ✔️✔️"
-            p2_str = f"(2). {loser}"
-        else:
-            p1_str = f"(1). {loser}"
-            p2_str = f"(2). {winner} ✔️✔️"
+        winner_link = make_profile_link(winner)
+        loser_link = make_profile_link(loser)
 
-        result_msg_text = f"🎲 <i>Table Status</i>\n\n{p1_str}\n\n{p2_str}\n\n{last_line_text}"
-        
-        bot.send_message(call.message.chat.id, result_msg_text, parse_mode='HTML')
-        
-        # Delete Bot's table set prompt message
-        try:
-            bot.delete_message(call.message.chat.id, call.message.message_id)
-        except Exception:
-            pass
-
-        update_live_list(call.message.chat.id, call.message.chat.title)
-        
-    except Exception as e:
-        print(f"Error in process_winner: {e}")
-
-# ==========================================
-# 🚀 MAIN RUNNER
-# ==========================================
-if __name__ == "__main__":
-    setup_db()
-    threading.Thread(target=run_flask).start()
-    
-    print("Bot updated with admin table auto-delete & tick mark filter...")
-    bot.polling(none_stop=True)
-    
+        # Photo 3 exact Table Status formatting with click
