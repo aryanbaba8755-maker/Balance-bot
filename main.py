@@ -481,4 +481,4 @@ def process_winner(call):
         bot.send_message(call.message.chat.id, result_msg_text, parse_mode='HTML', disable_web_page_preview=True)
         
         try:
-            bot.delete_messag
+            bot.delete_message
